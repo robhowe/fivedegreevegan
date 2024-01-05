@@ -1,0 +1,2357 @@
+<?php
+/**
+ * fdvegan.install
+ *
+ * Implement hook_schema(), hook_install() & hook_uninstall() for module fdvegan.
+ * Perform table create/delete actions to set up the site for the fdvegan module.
+ * Documented at:  https://api.drupal.org/api/drupal/modules%21system%21system.api.php/function/hook_schema/7
+ *           and:  https://api.drupal.org/api/drupal/includes%21database%21schema.inc/group/schemaapi/7
+ *
+ * PHP version 5.6
+ *
+ * @category   Install
+ * @package    fdvegan
+ * @author     Rob Howe <rob@robhowe.com>
+ * @copyright  2015-2018 Rob Howe
+ * @license    This file is proprietary and subject to the terms defined in file LICENSE.txt
+ * @version    Bitbucket via git: $Id$
+ * @link       https://fivedegreevegan.aprojects.org
+ * @see        fdvegan.module for related hook_enable() implementation.
+ * @since      version 0.2
+ */
+
+
+/*
+--
+-- Useful queries
+--
+
+-- Quick-reference for one actor:
+SELECT p.person_id, p.tmdbid, p.full_name, p.gender,
+           GROUP_CONCAT(DISTINCT t.tag_name) AS tags,
+           GROUP_CONCAT(DISTINCT m.title) AS movies
+  FROM dr_fdvegan_person p
+  LEFT JOIN dr_fdvegan_cast_list cl USING (person_id)
+  LEFT JOIN dr_fdvegan_movie m USING (movie_id)
+  LEFT JOIN dr_fdvegan_person_tag pt USING (person_id)
+  LEFT JOIN dr_fdvegan_tag t USING (tag_id)
+ WHERE p.full_name = 'Natalie Portman';
+
+-- Quick-reference matrix for all actors:
+SELECT person_id `FDV ID #`, tmdbid `TMDb Id`, full_name `Actor`, gender `Gender`, rating `Rating`, 
+       (SELECT GROUP_CONCAT(t.tag_name)
+          FROM dr_fdvegan_person p
+          LEFT JOIN dr_fdvegan_person_tag pt USING (person_id)
+          LEFT JOIN dr_fdvegan_tag t USING (tag_id)
+         WHERE person_id = t1.person_id
+        ) AS `Tags`,
+       (SELECT GROUP_CONCAT(m.title)
+          FROM dr_fdvegan_person p
+          LEFT JOIN dr_fdvegan_cast_list cl USING (person_id)
+          LEFT JOIN dr_fdvegan_movie m USING (movie_id)
+         WHERE person_id = t1.person_id
+        ) AS `Movies`
+  FROM 
+(SELECT p.person_id, p.tmdbid, p.full_name, p.gender, p.rating 
+  FROM dr_fdvegan_person p 
+) t1;
+
+-- Movies in best order for "public quiz teasers":
+SELECT '  ' `Processed`,
+       m.title `Movie`,
+       m.release_date `Release Date`,
+       m.rating `Rating`,
+       GROUP_CONCAT(p.full_name) `Level 1 Vegans`,
+       COUNT(cl.movie_id) `# Level 1 Vegans`
+  FROM dr_fdvegan_cast_list cl
+  LEFT JOIN dr_fdvegan_movie m ON m.movie_id = cl.movie_id
+  LEFT JOIN dr_fdvegan_person p ON p.person_id = cl.person_id
+ GROUP BY cl.movie_id HAVING `# Level 1 Vegans` > 1
+ ORDER BY `# Level 1 Vegans` DESC, `Release Date` DESC, `Rating` DESC;
+
+-- To find the most-connecting movies:
+SELECT m.release_date `Release Date`, m.title `Movie`,
+       GROUP_CONCAT(p.full_name) `Level 1 Vegans`,
+       COUNT(cl.movie_id) `# Level 1 Vegans`
+  FROM dr_fdvegan_cast_list cl
+  LEFT JOIN dr_fdvegan_movie m ON m.movie_id = cl.movie_id
+  LEFT JOIN dr_fdvegan_person p ON p.person_id = cl.person_id
+ GROUP BY cl.movie_id HAVING `# Level 1 Vegans` > 1
+ ORDER BY `# Level 1 Vegans` DESC;
+
+-- To find actors with the most immediately-connected movies:
+SET SESSION group_concat_max_len = 10000;
+SELECT m.release_date `Release Date`, p.full_name `Actor`,
+       GROUP_CONCAT(m.title) `Level 1 Movies`,
+       COUNT(cl.movie_id) `# Level 1 Movies`
+  FROM dr_fdvegan_cast_list cl
+  LEFT JOIN dr_fdvegan_person p ON p.person_id = cl.person_id
+  LEFT JOIN dr_fdvegan_movie m ON m.movie_id = cl.movie_id
+ GROUP BY cl.person_id HAVING `# Level 1 Movies` > 1
+ ORDER BY `# Level 1 Movies` DESC;
+
+-- To find a Level 1 connection between 2 actors:
+SELECT m.release_date `Release Date`, m.title `Movie`
+  FROM dr_fdvegan_cast_list cl
+  LEFT JOIN dr_fdvegan_movie m ON m.movie_id = cl.movie_id
+  LEFT JOIN dr_fdvegan_person p ON p.person_id = cl.person_id
+ WHERE p.full_name = 'Alec Baldwin'
+   AND m.movie_id
+    IN (SELECT cl2.movie_id
+          FROM dr_fdvegan_cast_list cl2
+          LEFT JOIN dr_fdvegan_person p2 ON p2.person_id = cl2.person_id
+         WHERE p2.full_name = 'Woody Harrelson'
+       );
+
+*/
+
+
+/**
+ * Implementation of hook_requirements().
+ *
+ * Note - Any output from this function will appear on the Drupal Status Report page.
+ */
+function fdvegan_requirements($phase) {
+    $requirements = array();
+    $t = get_t();  // Ensure translations don't break during installation.
+
+    if ($phase == 'install' || $phase == 'update' || $phase == 'runtime') {
+
+        // Test for minimum PHP version
+        if (version_compare(phpversion(), '5.5.0') < 0) {
+            $requirements['fdvegan'] = array(
+                'title' => $t('FDVegan'),
+                'severity' => REQUIREMENT_INFO,  // REQUIREMENT_ERROR
+                'description' => $t('Your PHP installation is too old. FDVegan requires at least PHP %version.', array('%version' => '5.5.0')),
+            );
+        } else {
+            $requirements['fdvegan'] = array(
+                'title' => $t('FDVegan'),
+                'value' => $t('Detected'),
+                'severity' => REQUIREMENT_OK,
+            );
+        }
+    }
+    return $requirements;
+}
+
+
+/**
+ * Implementation of hook_schema().
+ *
+ * For a good list of field types and sizes, see:  https://www.drupal.org/node/159605
+ */
+function fdvegan_schema() {
+    $schema = array();
+
+    // "fdvegan_person" table specification.
+    $schema['fdvegan_person'] = array(
+        'description' => 'Stores actor and actress data.',
+        'fields' => array(
+            'person_id' => array(
+                'description' => t('Primary Key: Unique person ID.'),
+                'type' => 'serial',
+                'unsigned' => TRUE,
+                'not null' => TRUE,
+            ),
+            'tmdbid' => array(
+                'description' => t('The primary id on api.themoviedb.org'),
+                'type' => 'int',
+                'unsigned' => FALSE,
+                'not null' => FALSE,
+                'default' => NULL,
+            ),
+            'tmdb_image_path' => array(
+                'description' => t('Actor image filename on TMDb.'),
+                'type' => 'varchar',
+                'length' => 255,
+                'size' => 'normal',
+                'not null' => FALSE,
+                'default' => NULL,
+            ),
+            'imdb_id' => array(
+                'description' => t('The primary id on IMDb.com'),
+                'type'     => 'varchar',
+                'length'   => 64,
+                'size'     => 'normal',
+                'not null' => FALSE,
+                'default'  => NULL,
+            ),
+            'full_name' => array(
+//                'description' => '',
+                'type' => 'varchar',
+                'length' => 255,
+                'size' => 'normal',
+                'not null' => TRUE,
+                'default' => '',
+            ),
+            'first_name' => array(
+//                'description' => '',
+                'type' => 'varchar',
+                'length' => 255,
+                'size' => 'normal',
+                'not null' => TRUE,
+                'default' => '',
+            ),
+            'middle_name' => array(
+//                'description' => '',
+                'type' => 'varchar',
+                'length' => 255,
+                'size' => 'normal',
+                'not null' => TRUE,
+                'default' => '',
+            ),
+            'last_name' => array(
+//                'description' => '',
+                'type' => 'varchar',
+                'length' => 255,
+                'size' => 'normal',
+                'not null' => TRUE,
+                'default' => '',
+            ),
+            'gender' => array(
+                'description' => t('Gender is (M,F,O): Male, Female or Other.'),
+//                'type' => 'char',
+//                'length' => 1,
+                'mysql_type' => 'enum(\'M\',\'F\',\'O\')',
+                'unsigned' => FALSE,
+                'not null' => FALSE,
+//                'default' => NULL,
+            ),
+            'rating' => array(
+                'description' => t('Number of upvotes (minus downvotes). Initialized from TMDb "popularity"'),
+                'type' => 'int',
+                'unsigned' => FALSE,
+                'not null' => FALSE,
+                'default' => 0,
+            ),
+            'homepage_url' => array(
+                'description' => t('URL to externally hosted homepage of person, if any.'),
+                'type' => 'varchar',
+                'length' => 255,
+                'size' => 'normal',
+                'not null' => FALSE,
+                'default' => NULL,
+            ),
+            'biography' => array(
+                'description' => t('Bio text.'),
+                'type'        => 'text',
+//                'length'      => 4096,
+                'size'        => 'normal',
+                'not null'    => FALSE,
+            ),
+            'birthplace' => array(
+                'description' => t('Location where person was born.'),
+                'type' => 'varchar',
+                'length' => 255,
+                'size' => 'normal',
+                'not null' => FALSE,
+                'default' => NULL,
+            ),
+            'birthday' => array(
+                'description' => t('In format: YYYY-MM-DD'),
+                'type' => 'varchar',
+                'length' => 10,
+                'size' => 'normal',
+                'not null' => FALSE,
+                'default' => '',
+            ),
+            'deathday' => array(
+                'description' => t('In format: YYYY-MM-DD'),
+                'type' => 'varchar',
+                'length' => 10,
+                'size' => 'normal',
+                'not null' => FALSE,
+                'default' => '',
+            ),
+            'created' => array(
+                'description' => t('Timestamp for when record was created.'),
+                'mysql_type'  => 'DATETIME',
+//                'sqlite_type' => 'VARCHAR',
+                'not null'    => FALSE,
+//                'default' => NULL,
+                'default' => format_date(time(), 'custom', 'Y-m-d 00:00:00'),
+                // See hook_install() for the actual "INSERT TRIGGER"
+            ),
+            'updated' => array(
+                'description' => t('Timestamp for when record was last updated.'),
+                'mysql_type'  => 'DATETIME',
+//                'sqlite_type' => 'VARCHAR',
+                'not null'    => TRUE,
+//                'default' => 'CURRENT_TIMESTAMP',
+                'default' => format_date(time(), 'custom', 'Y-m-d 00:00:00'),
+                // See hook_install() for the actual "ON UPDATE" attribute
+            ),
+            'synced' => array(
+                'description' => t('Timestamp for when person was last synced from source.'),
+                'mysql_type'  => 'DATETIME',
+//                'sqlite_type' => 'VARCHAR',
+                'not null'    => FALSE,
+                'default' => NULL,
+            ),
+        ),
+        'primary key' => array('person_id'),
+        'unique keys' => array(
+            'tmdbid'  => array('tmdbid'),
+            'full_name' => array('full_name'),
+        ),
+        'indexes' => array(
+            'tmdbid_idx'    => array('tmdbid'),
+            'full_name_idx' => array('full_name'),
+        ),
+    );  // end "fdvegan_person" table specification.
+
+    // "fdvegan_movie" table specification.
+    $schema['fdvegan_movie'] = array(
+        'description' => 'Stores movie data.',
+        'fields' => array(
+            'movie_id' => array(
+                'description' => t('Primary Key: Unique movie ID.'),
+                'type'     => 'serial',
+                'unsigned' => TRUE,
+                'not null' => TRUE,
+            ),
+            'tmdbid' => array(
+                'description' => t('The primary id on api.themoviedb.org'),
+                'type'     => 'int',
+                'unsigned' => FALSE,
+                'not null' => FALSE,
+                'default'  => NULL,
+            ),
+            'tmdb_image_path' => array(
+                'description' => t('Movie poster image filename on TMDb.'),
+                'type' => 'varchar',
+                'length' => 255,
+                'size' => 'normal',
+                'not null' => FALSE,
+                'default' => NULL,
+            ),
+            'tmdb_moviebackdrop_image_path' => array(
+                'description' => t('Movie backdrop image filename on TMDb.'),
+                'type' => 'varchar',
+                'length' => 255,
+                'size' => 'normal',
+                'not null' => FALSE,
+                'default' => NULL,
+            ),
+            'imdb_id' => array(
+                'description' => t('The primary id on IMDb.com'),
+                'type'     => 'varchar',
+                'length'   => 64,
+                'size'     => 'normal',
+                'not null' => FALSE,
+                'default'  => NULL,
+            ),
+            'title' => array(
+                'type'     => 'varchar',
+                'length'   => 255,
+                'size'     => 'normal',
+                'not null' => TRUE,
+                'default'  => '',
+            ),
+            'release_date' => array(
+                'description' => t('In format: YYYY-MM-DD'),
+                'type'     => 'varchar',
+                'length'   => 10,
+                'size'     => 'normal',
+                'not null' => FALSE,
+                'default'  => '',
+            ),
+            'adult_rated' => array(
+                'description' => t('Is adult-rated flag (0 or 1).'),
+                'type'     => 'int',
+                'size'     => 'tiny',
+                'not null' => FALSE,
+                'default'  => 0,
+            ),
+            'rating' => array(
+                'description' => t('Number of upvotes (minus downvotes). Initialized from TMDb "popularity".'),
+                'type'     => 'int',
+                'unsigned' => FALSE,
+                'not null' => FALSE,
+                'default'  => 0,
+            ),
+            'homepage_url' => array(
+                'description' => t('URL to externally hosted homepage of movie, if any.'),
+                'type'     => 'varchar',
+                'length'   => 255,
+                'size'     => 'normal',
+                'not null' => FALSE,
+                'default'  => NULL,
+            ),
+            'tagline' => array(
+                'description' => t('Movie tagline/slogan text.'),
+                'type'        => 'text',
+//                'length'      => 1024,
+                'size'        => 'normal',
+                'not null'    => FALSE,
+                'default'     => NULL,
+            ),
+            'overview' => array(
+                'description' => t('Movie overview/description text.'),
+                'type'        => 'text',
+//                'length'      => 4096,
+                'size'        => 'normal',
+                'not null'    => FALSE,
+                'default'     => NULL,
+            ),
+            'status' => array(
+                'description' => t('Movie status description, eg: "Released".'),
+                'type'     => 'varchar',
+                'length'   => 255,
+                'size'     => 'normal',
+                'not null' => FALSE,
+                'default'  => NULL,
+            ),
+            'budget' => array(
+                'description' => t('The total cost to make the movie, in USD.'),
+                'type'     => 'int',
+                'size'     => 'big',
+                'unsigned' => FALSE,
+                'not null' => FALSE,
+                'default'  => NULL,
+            ),
+            'revenue' => array(
+                'description' => t('The total gross revenue of the movie to-date, in USD.'),
+                'type'     => 'int',
+                'size'     => 'big',  // Movie revenues are sometimes > $2bil
+                'unsigned' => FALSE,
+                'not null' => FALSE,
+                'default'  => NULL,
+            ),
+            'runtime' => array(
+                'description' => t('Movie length in minutes.'),
+                'type'     => 'int',
+                'unsigned' => TRUE,
+                'not null' => FALSE,
+                'default'  => NULL,
+            ),
+            'created' => array(
+                'description' => t('Timestamp for when record was created.'),
+                'mysql_type'  => 'DATETIME',
+//                'sqlite_type' => 'VARCHAR',
+                'not null'    => FALSE,
+//                'default' => NULL,
+                'default' => format_date(time(), 'custom', 'Y-m-d 00:00:00'),
+                // See hook_install() for the actual "INSERT TRIGGER"
+            ),
+            'updated' => array(
+                'description' => t('Timestamp for when record was last updated.'),
+                'mysql_type'  => 'DATETIME',
+//                'sqlite_type' => 'VARCHAR',
+                'not null'    => TRUE,
+//                'default' => 'CURRENT_TIMESTAMP',
+                'default' => format_date(time(), 'custom', 'Y-m-d 00:00:00'),
+                // See hook_install() for the actual "ON UPDATE" attribute
+            ),
+            'synced' => array(
+                'description' => t('Timestamp for when person was last synced from source.'),
+                'mysql_type'  => 'DATETIME',
+//                'sqlite_type' => 'VARCHAR',
+                'not null'    => FALSE,
+                'default' => NULL,
+            ),
+        ),
+        'primary key' => array('movie_id'),
+        'unique keys' => array(
+            'tmdbid' => array('tmdbid'),
+            'imdb_id' => array('imdb_id'),
+//            'title' => array('title'),  // movie titles are NOT unique. E.g.: "The Aviator"
+        ),
+        'indexes' => array(
+            'tmdbid_idx' => array('tmdbid'),
+            'title_idx' => array('title'),
+        ),
+    );  // end "fdvegan_movie" table specification.
+
+    // "fdvegan_cast_list" table specification.
+    $schema['fdvegan_cast_list'] = array(
+        'description' => 'Stores movie cast list data.',
+        'fields' => array(
+            'cast_id' => array(
+                'description' => t('Primary Key: Unique cast_list ID.'),
+                'type' => 'serial',
+                'unsigned' => TRUE,
+                'not null' => TRUE,
+            ),
+            'movie_id' => array(
+                'description' => t('movie_id'),
+                'type' => 'int',
+                'unsigned' => TRUE,
+                'not null' => TRUE,
+            ),
+            'person_id' => array(
+                'description' => t('person_id'),
+                'type' => 'int',
+                'unsigned' => TRUE,
+                'not null' => TRUE,
+            ),
+            'tmdb_order' => array(
+                'description' => t('Cast list order (starting with 0).'),
+                'type' => 'int',
+                'unsigned' => FALSE,
+                'not null' => FALSE,
+            ),
+            'character' => array(
+                'description' => t('Movie character description.'),
+                'type' => 'varchar',
+                'length' => 255,
+                'size' => 'normal',
+                'not null' => FALSE,
+                'default' => '',
+            ),
+            'created' => array(
+                'description' => t('Timestamp for when record was created.'),
+                'mysql_type'  => 'DATETIME',
+//                'sqlite_type' => 'VARCHAR',
+                'not null'    => FALSE,
+//                'default' => NULL,
+                'default' => format_date(time(), 'custom', 'Y-m-d 00:00:00'),
+                // See hook_install() for the actual "INSERT TRIGGER"
+            ),
+            'updated' => array(
+                'description' => t('Timestamp for when record was last updated.'),
+                'mysql_type'  => 'DATETIME',
+//                'sqlite_type' => 'VARCHAR',
+                'not null'    => TRUE,
+//                'default' => 'CURRENT_TIMESTAMP',
+                'default' => format_date(time(), 'custom', 'Y-m-d 00:00:00'),
+                // See hook_install() for the actual "ON UPDATE" attribute
+            ),
+            'synced' => array(
+                'description' => t('Timestamp for when person was last synced from source.'),
+                'mysql_type'  => 'DATETIME',
+//                'sqlite_type' => 'VARCHAR',
+                'not null'    => FALSE,
+                'default' => NULL,
+            ),
+        ),
+        'primary key' => array('cast_id'),
+        'unique keys' => array(
+            'movie_person_id' => array('movie_id', 'person_id'),
+            'movie_order' => array('movie_id', 'tmdb_order'),
+        ),
+        'foreign keys' => array(
+            'cast_list_ibfk_1' => array(
+                'table' => 'fdvegan_person',
+                'columns' => array('person_id' => 'person_id'),
+            ),
+            'cast_list_ibfk_2' => array(
+                'table' => 'fdvegan_movie',
+                'columns' => array('movie_id' => 'movie_id'),
+            ),
+        ),
+        'indexes' => array(
+            'movie_id_idx' => array('movie_id'),
+            'person_id_idx' => array('person_id'),
+        ),
+    );  // end "fdvegan_cast_list" table specification.
+
+    // "fdvegan_connections" table specification.
+    $schema['fdvegan_connections'] = array(
+        'description' => 'Stores actor connections by degrees.',
+        'fields' => array(
+            'person_id' => array(
+                'description' => t('person_id'),
+                'type' => 'int',
+                'unsigned' => TRUE,
+                'not null' => TRUE,
+            ),
+            'full_name' => array(
+                'description' => 'Snapshot of fdvegan_person.full_name',
+                'type' => 'varchar',
+                'length' => 255,
+                'size' => 'normal',
+                'not null' => TRUE,
+                'default' => '',
+            ),
+            'degree0_names' => array(
+                'description' => t('Actor connections within 0 degrees.'),
+                'type'        => 'text',
+//                'length'      => 4096,
+                'size'        => 'normal',
+                'not null'    => FALSE,
+                'default'     => NULL,
+            ),
+            'degree1_names' => array(
+                'description' => t('Actor connections within 1 degrees.'),
+                'type'        => 'text',
+//                'length'      => 4096,
+                'size'        => 'normal',
+                'not null'    => FALSE,
+                'default'     => NULL,
+            ),
+            'degree2_names' => array(
+                'description' => t('Actor connections within 2 degrees.'),
+                'type'        => 'text',
+//                'length'      => 4096,
+                'size'        => 'normal',
+                'not null'    => FALSE,
+                'default'     => NULL,
+            ),
+            'degree3_names' => array(
+                'description' => t('Actor connections within 3 degrees.'),
+                'type'        => 'text',
+//                'length'      => 4096,
+                'size'        => 'normal',
+                'not null'    => FALSE,
+                'default'     => NULL,
+            ),
+            'degree4_names' => array(
+                'description' => t('Actor connections within 4 degrees.'),
+                'type'        => 'text',
+//                'length'      => 4096,
+                'size'        => 'normal',
+                'not null'    => FALSE,
+                'default'     => NULL,
+            ),
+            'degree5_names' => array(
+                'description' => t('Actor connections within 5 degrees.'),
+                'type'        => 'text',
+//                'length'      => 4096,
+                'size'        => 'normal',
+                'not null'    => FALSE,
+                'default'     => NULL,
+            ),
+            'created' => array(
+                'description' => t('Timestamp for when record was created.'),
+                'mysql_type'  => 'DATETIME',
+//                'sqlite_type' => 'VARCHAR',
+                'not null'    => FALSE,
+//                'default' => NULL,
+                'default' => format_date(time(), 'custom', 'Y-m-d 00:00:00'),
+                // See hook_install() for the actual "INSERT TRIGGER"
+            ),
+            'updated' => array(
+                'description' => t('Timestamp for when record was last updated.'),
+                'mysql_type'  => 'DATETIME',
+//                'sqlite_type' => 'VARCHAR',
+                'not null'    => TRUE,
+//                'default' => 'CURRENT_TIMESTAMP',
+                'default' => format_date(time(), 'custom', 'Y-m-d 00:00:00'),
+                // See hook_install() for the actual "ON UPDATE" attribute
+            ),
+        ),
+        'primary key' => array('person_id'),
+        'foreign keys' => array(
+            'connections_ibfk_1' => array(
+                'table' => 'fdvegan_person',
+                'columns' => array('person_id' => 'person_id'),
+            ),
+        ),
+        'indexes' => array(
+            'person_id_idx' => array('person_id'),
+        ),
+    );  // end "fdvegan_connections" table specification.
+
+    // "fdvegan_process_status" table specification.
+    $schema['fdvegan_process_status'] = array(
+        'description' => 'Status data for batch / script / etc. in-progress processes.',
+        'fields' => array(
+            'process_id' => array(
+                'description' => t('Primary Key: Unique process ID.'),
+                'type'        => 'serial',
+                'unsigned'    => TRUE,
+                'not null'    => TRUE,
+            ),
+            'process_name' => array(
+                'description' => t('Unique machine-name of batch / script / process.'),
+                'type'        => 'varchar',
+                'length'      => 128,
+                'size'        => 'normal',
+                'not null'    => TRUE,
+                'default'     => '',
+            ),
+            'status' => array(
+                'description' => t('Human-readable status.'),
+                'type'        => 'varchar',
+                'length'      => 128,
+                'size'        => 'normal',
+                'not null'    => FALSE,
+                'default'     => NULL,
+            ),
+            'verbose_status' => array(
+                'description' => t('Human-readable long description of status.'),
+                'type'        => 'text',
+//                'length'      => 4096,
+                'size'        => 'normal',
+                'not null'    => FALSE,
+                'default'     => NULL,
+            ),
+            'movie_id' => array(
+                'description' => t('Optional: last movie_id processed.'),
+                'type'        => 'int',
+                'unsigned'    => TRUE,
+                'not null'    => FALSE,
+                'default'     => NULL,
+            ),
+            'person_id' => array(
+                'description' => t('Optional: last person_id processed.'),
+                'type'        => 'int',
+                'unsigned'    => TRUE,
+                'not null'    => FALSE,
+                'default'     => NULL,
+            ),
+            'counter' => array(
+                'description' => t('Optional: last loop / counter num processed.'),
+                'type'        => 'int',
+                'unsigned'    => FALSE,
+                'not null'    => FALSE,
+                'default'     => NULL,
+            ),
+            'context' => array(
+                'description' => t('Machine-readable context data.'),
+                'type'        => 'text',
+//                'length'      => 4096,
+                'size'        => 'normal',
+                'not null'    => FALSE,
+                'default'     => NULL,
+            ),
+            'created' => array(
+                'description' => t('Timestamp for when record was created.'),
+                'mysql_type'  => 'DATETIME',
+//                'sqlite_type' => 'VARCHAR',
+                'not null'    => FALSE,
+//                'default' => NULL,
+                'default' => format_date(time(), 'custom', 'Y-m-d 00:00:00'),
+                // See hook_install() for the actual "INSERT TRIGGER"
+            ),
+            'updated' => array(
+                'description' => t('Timestamp for when record was last updated.'),
+                'mysql_type'  => 'DATETIME',
+//                'sqlite_type' => 'VARCHAR',
+                'not null'    => TRUE,
+//                'default' => 'CURRENT_TIMESTAMP',
+                'default' => format_date(time(), 'custom', 'Y-m-d 00:00:00'),
+                // See hook_install() for the actual "ON UPDATE" attribute
+            ),
+            'synced' => array(
+                'description' => t('Optional: timestamp for when process was last synced from source.'),
+                'mysql_type'  => 'DATETIME',
+//                'sqlite_type' => 'VARCHAR',
+                'not null'    => FALSE,
+                'default' => NULL,
+            ),
+        ),
+        'primary key' => array('process_id'),
+        'unique keys' => array(
+            'process_name' => array('process_name'),
+        ),
+        'foreign keys' => array(
+            'process_status_ibfk_1' => array(
+                'table' => 'fdvegan_movie',
+                'columns' => array('movie_id' => 'movie_id'),
+            ),
+            'process_status_ibfk_2' => array(
+                'table' => 'fdvegan_person',
+                'columns' => array('person_id' => 'person_id'),
+            ),
+        ),
+        'indexes' => array(
+            'movieid_idx'  => array('movie_id'),
+            'personid_idx' => array('person_id'),
+        ),
+    );  // end "fdvegan_process_status" table specification.
+
+    // "fdvegan_featured_person" table specification.
+    $schema['fdvegan_featured_person'] = array(
+        'description' => 'Stores top-featured persons.',
+        'fields' => array(
+            'person_id' => array(
+                'description' => t('person_id'),
+                'type' => 'int',
+                'unsigned' => TRUE,
+                'not null' => TRUE,
+            ),
+            'full_name' => array(
+                'description' => 'Snapshot of fdvegan_person.full_name',
+                'type' => 'varchar',
+                'length' => 255,
+                'size' => 'normal',
+                'not null' => TRUE,
+                'default' => '',
+            ),
+            'created' => array(
+                'description' => t('Timestamp for when record was created.'),
+                'mysql_type'  => 'DATETIME',
+//                'sqlite_type' => 'VARCHAR',
+                'not null'    => FALSE,
+//                'default' => NULL,
+                'default' => format_date(time(), 'custom', 'Y-m-d 00:00:00'),
+                // See hook_install() for the actual "INSERT TRIGGER"
+            ),
+        ),
+        'primary key' => array('person_id'),
+        'foreign keys' => array(
+            'featured_persons_ibfk_1' => array(
+                'table' => 'fdvegan_person',
+                'columns' => array('person_id' => 'person_id'),
+            ),
+        ),
+        'indexes' => array(
+            'person_id_idx' => array('person_id'),
+        ),
+    );  // end "fdvegan_featured_person" table specification.
+
+    // "fdvegan_tag" table specification.
+    $schema['fdvegan_tag'] = array(
+        'description' => 'Stores all possible person tag names.',
+        'fields' => array(
+            'tag_id' => array(
+                'description' => t('Primary Key: Unique tag ID.'),
+                'type'        => 'serial',
+                'unsigned'    => TRUE,
+                'not null'    => TRUE,
+            ),
+            'tag_name' => array(
+                'description' => t('tag / occupation /category / label name.'),
+                'type'        => 'varchar',
+                'length'      => 255,
+                'size'        => 'normal',
+                'not null'    => FALSE,
+                'default'     => '',
+            ),
+            'created' => array(
+                'description' => t('Timestamp for when record was created.'),
+                'mysql_type'  => 'DATETIME',
+//                'sqlite_type' => 'VARCHAR',
+                'not null'    => FALSE,
+//                'default'     => NULL,
+                'default'     => format_date(time(), 'custom', 'Y-m-d 00:00:00'),
+                // See hook_install() for the actual "INSERT TRIGGER"
+            ),
+            'updated' => array(
+                'description' => t('Timestamp for when record was last updated.'),
+                'mysql_type'  => 'DATETIME',
+//                'sqlite_type' => 'VARCHAR',
+                'not null'    => TRUE,
+//                'default'     => 'CURRENT_TIMESTAMP',
+                'default'     => format_date(time(), 'custom', 'Y-m-d 00:00:00'),
+                // See hook_install() for the actual "ON UPDATE" attribute
+            ),
+        ),
+        'primary key' => array('tag_id'),
+        'unique keys' => array(
+            'tag_name' => array('tag_name'),
+        ),
+    );  // end "fdvegan_tag" table specification.
+
+    // "fdvegan_person_tag" table specification.
+    $schema['fdvegan_person_tag'] = array(
+        'description' => 'Stores many-to-many person-to-tag mappings.',
+        'fields' => array(
+            'person_id' => array(
+                'description' => 'person_id',
+                'type'        => 'int',
+                'unsigned'    => TRUE,
+                'not null'    => TRUE,
+            ),
+            'tag_id' => array(
+                'description' => 'tag_id',
+                'type'        => 'int',
+                'unsigned'    => TRUE,
+                'not null'    => TRUE,
+            ),
+            'created' => array(
+                'description' => t('Timestamp for when record was created.'),
+                'mysql_type'  => 'DATETIME',
+//                'sqlite_type' => 'VARCHAR',
+                'not null'    => FALSE,
+//                'default'     => NULL,
+                'default'     => format_date(time(), 'custom', 'Y-m-d 00:00:00'),
+                // See hook_install() for the actual "INSERT TRIGGER"
+            ),
+        ),
+        'unique keys' => array(
+            'person_tag_id' => array('person_id', 'tag_id'),
+        ),
+        'foreign keys' => array(
+            'person_tag_ibfk_1' => array(
+                'table' => 'fdvegan_person',
+                'columns' => array('person_id' => 'person_id'),
+            ),
+            'person_tag_ibfk_2' => array(
+                'table' => 'fdvegan_tag',
+                'columns' => array('tag_id' => 'tag_id'),
+            ),
+        ),
+    );  // end "fdvegan_person_tag" table specification.
+
+    // "fdvegan_genre" table specification.
+    $schema['fdvegan_genre'] = array(
+        'description' => 'Stores all possible movie genre names.',
+        'fields' => array(
+            'genre_id' => array(
+                'description' => t('Primary Key: Unique genre ID.'),
+                'type' => 'serial',
+                'unsigned' => TRUE,
+                'not null' => TRUE,
+            ),
+            'genre_name' => array(
+                'description' => t('Genre name, eg: "Action"'),
+                'type' => 'varchar',
+                'length' => 255,
+                'size' => 'normal',
+                'not null' => TRUE,
+            ),
+            'created' => array(
+                'description' => t('Timestamp for when record was created.'),
+                'mysql_type'  => 'DATETIME',
+//                'sqlite_type' => 'VARCHAR',
+                'not null'    => FALSE,
+//                'default' => NULL,
+                'default' => format_date(time(), 'custom', 'Y-m-d 00:00:00'),
+                // See hook_install() for the actual "INSERT TRIGGER"
+            ),
+            'updated' => array(
+                'description' => t('Timestamp for when record was last updated.'),
+                'mysql_type'  => 'DATETIME',
+//                'sqlite_type' => 'VARCHAR',
+                'not null'    => TRUE,
+//                'default' => 'CURRENT_TIMESTAMP',
+                'default' => format_date(time(), 'custom', 'Y-m-d 00:00:00'),
+                // See hook_install() for the actual "ON UPDATE" attribute
+            ),
+        ),
+        'primary key' => array('genre_id'),
+        'unique keys' => array(
+            'genre_name' => array('genre_name'),
+        ),
+    );  // end "fdvegan_genre" table specification.
+
+    // "fdvegan_movie_genre" table specification.
+    $schema['fdvegan_movie_genre'] = array(
+        'description' => 'Stores many-to-many movie-to-genre mappings.',
+        'fields' => array(
+            'movie_id' => array(
+                'description' => 'movie_id',
+                'type' => 'int',
+                'unsigned' => TRUE,
+                'not null' => TRUE,
+            ),
+            'genre_id' => array(
+                'description' => 'genre_id',
+                'type' => 'int',
+                'unsigned' => TRUE,
+                'not null' => TRUE,
+            ),
+            'created' => array(
+                'description' => t('Timestamp for when record was created.'),
+                'mysql_type'  => 'DATETIME',
+//                'sqlite_type' => 'VARCHAR',
+                'not null'    => FALSE,
+//                'default' => NULL,
+                'default' => format_date(time(), 'custom', 'Y-m-d 00:00:00'),
+                // See hook_install() for the actual "INSERT TRIGGER"
+            ),
+        ),
+        'unique keys' => array(
+            'movie_genre_id' => array('movie_id', 'genre_id'),
+        ),
+        'foreign keys' => array(
+            'movie_genre_ibfk_1' => array(
+                'table' => 'fdvegan_movie',
+                'columns' => array('movie_id' => 'movie_id'),
+            ),
+            'movie_genre_ibfk_2' => array(
+                'table' => 'fdvegan_genre',
+                'columns' => array('genre_id' => 'genre_id'),
+            ),
+        ),
+    );  // end "fdvegan_movie_genre" table specification.
+
+    // "fdvegan_quote" table specification.
+    $schema['fdvegan_quote'] = array(
+        'description' => "Stores one-to-many person's quotes.",
+        'fields' => array(
+            'quote_id' => array(
+                'description' => t('Primary Key: Unique quote ID.'),
+                'type' => 'serial',
+                'unsigned' => TRUE,
+                'not null' => TRUE,
+            ),
+            'person_id' => array(
+                'description' => 'person_id',
+                'type' => 'int',
+                'unsigned' => TRUE,
+                'not null' => TRUE,
+            ),
+            'tag_id' => array(
+                'description' => 'tag_id',
+                'type' => 'int',
+                'unsigned' => TRUE,
+                'not null' => FALSE,
+                'default' => NULL,
+            ),
+            'rating' => array(
+                'description' => t('Number of upvotes (minus downvotes).'),
+                'type' => 'int',
+                'unsigned' => FALSE,
+                'not null' => FALSE,
+                'default' => 0,
+            ),
+            'quote' => array(
+                'description' => t('Quote text.'),
+                'type'        => 'text',
+//                'length'      => 4096,
+                'size'        => 'normal',
+                'not null'    => TRUE,
+            ),
+            'source' => array(
+                'description' => 'Human-readable description, eg: TMDb, Wikipedia, IMDB, FDV submission, etc.',
+                'type'        => 'text',
+//                'length'      => 1024,
+                'size' => 'normal',
+                'not null' => FALSE,
+                'default' => NULL,
+            ),
+            'created' => array(
+                'description' => t('Timestamp for when record was created.'),
+                'mysql_type'  => 'DATETIME',
+//                'sqlite_type' => 'VARCHAR',
+                'not null'    => FALSE,
+//                'default' => NULL,
+                'default' => format_date(time(), 'custom', 'Y-m-d 00:00:00'),
+                // See hook_install() for the actual "INSERT TRIGGER"
+            ),
+        ),
+        'primary key' => array('quote_id'),
+        'foreign keys' => array(
+            'quote_ibfk_1' => array(
+                'table' => 'fdvegan_person',
+                'columns' => array('person_id' => 'person_id'),
+            ),
+            'quote_ibfk_2' => array(
+                'table' => 'fdvegan_tag',
+                'columns' => array('tag_id' => 'tag_id'),
+            ),
+        ),
+    );  // end "fdvegan_quote" table specification.
+
+    // "fdvegan_media" table specification.
+    $schema['fdvegan_media'] = array(
+        'description' => 'Stores actor and movie image filenames.',
+        'fields' => array(
+            'media_id' => array(
+                'description' => t('Primary Key: Unique media ID.'),
+                'type' => 'serial',
+                'unsigned' => TRUE,
+                'not null' => TRUE,
+            ),
+            'movie_id' => array(
+                'description' => t('movie_id'),
+                'type' => 'int',
+                'unsigned' => TRUE,
+                'not null' => FALSE,
+            ),
+            'person_id' => array(
+                'description' => t('person_id'),
+                'type' => 'int',
+                'unsigned' => TRUE,
+                'not null' => FALSE,
+            ),
+            'media_type' => array(
+                'description' => t('person, movie, moviebackdrop, movievideo'),
+                'type' => 'varchar',
+                'length' => 20,
+                'size' => 'normal',
+                'not null' => TRUE,
+            ),
+            'media_size' => array(
+                'description' => t('s, m, l, o (small, medium, large, original).'),
+                'type' => 'char',
+                'length' => 1,
+                'size' => 'normal',
+                'not null' => TRUE,
+            ),
+            'order_num' => array(
+                'description' => t('Ordering sequence, loosely based on TMDb ratings.'),
+                'type' => 'int',
+                'unsigned' => TRUE,
+                'not null' => TRUE,
+                'default' => 1,
+            ),
+            'local_filename' => array(
+                'description' => 'media_type-media_size-[movie_id|person_id]-order_num.jpg (must prepend /media_type/media_size/ for dir location.)',
+                'type' => 'varchar',
+                'length' => 255,
+                'size' => 'normal',
+                'not null' => FALSE,
+                'default' => NULL,
+            ),
+            'external_url' => array(
+                'description' => 'URL to externally hosted media file, if any.',
+                'type' => 'varchar',
+                'length' => 2048,
+                'size' => 'normal',
+                'not null' => FALSE,
+                'default' => NULL,
+            ),
+            'source' => array(
+                'description' => 'Human-readable description, eg: TMDb, Wikipedia, IMDB, FDV submission, etc.',
+                'type'        => 'text',
+//                'length'      => 1024,
+                'size' => 'normal',
+                'not null' => FALSE,
+                'default' => NULL,
+            ),
+            'rating' => array(
+                'description' => t('Number of upvotes (minus downvotes).'),
+                'type' => 'int',
+                'unsigned' => FALSE,
+                'not null' => FALSE,
+                'default' => 0,
+            ),
+            'media_date' => array(
+                'description' => t('Date photo was taken.'),
+                'mysql_type'  => 'DATETIME',
+//                'sqlite_type' => 'VARCHAR',
+                'not null'    => FALSE,
+                'default' => NULL,
+            ),
+            'descr' => array(
+                'description' => 'Human-readable description of item. Eg: Natalie Portman at the Oscars.',
+                'type'        => 'text',
+//                'length'      => 1024,
+                'size' => 'normal',
+                'not null' => FALSE,
+                'default' => NULL,
+            ),
+            'height' => array(
+                'description' => t('Height of image in pixels.'),
+                'type' => 'int',
+                'unsigned' => FALSE,
+                'not null' => FALSE,
+                'default' => NULL,
+            ),
+            'width' => array(
+                'description' => t('Width of image in pixels.'),
+                'type' => 'int',
+                'unsigned' => FALSE,
+                'not null' => FALSE,
+                'default' => NULL,
+            ),
+            'created' => array(
+                'description' => t('Timestamp for when record was created.'),
+                'mysql_type'  => 'DATETIME',
+//                'sqlite_type' => 'VARCHAR',
+                'not null'    => FALSE,
+//                'default' => NULL,
+                'default' => format_date(time(), 'custom', 'Y-m-d 00:00:00'),
+                // See hook_install() for the actual "INSERT TRIGGER"
+            ),
+            'updated' => array(
+                'description' => t('Timestamp for when record was last updated.'),
+                'mysql_type'  => 'DATETIME',
+//                'sqlite_type' => 'VARCHAR',
+                'not null'    => TRUE,
+//                'default' => 'CURRENT_TIMESTAMP',
+                'default' => format_date(time(), 'custom', 'Y-m-d 00:00:00'),
+                // See hook_install() for the actual "ON UPDATE" attribute
+            ),
+            'synced' => array(
+                'description' => t('Timestamp for when media was last synced from source.'),
+                'mysql_type'  => 'DATETIME',
+//                'sqlite_type' => 'VARCHAR',
+                'not null'    => FALSE,
+                'default' => NULL,
+            ),
+        ),
+        'primary key' => array('media_id'),
+        'unique keys' => array(
+            'movie_person_type_size_order' => array('movie_id', 'person_id', 'media_type', 'media_size', 'order_num'),
+            'local_filename' => array('local_filename'),
+        ),
+        'indexes' => array(
+            'movieid_idx' => array('movie_id'),
+            'personid_idx' => array('person_id'),
+            'mediatype_idx' => array('media_type'),
+            'mediasize_idx' => array('media_size'),
+        ),
+    );  // end "fdvegan_media" table specification.
+
+    return $schema;
+}
+
+
+/**
+ * Implement hook_install().
+ *
+ * Perform actions to set up the site for the fdvegan module.
+ * Documented at:  https://api.drupal.org/api/drupal/modules%21system%21system.api.php/function/hook_install/7
+ */
+function fdvegan_install() {
+
+    //
+    // Since hook_schema() doesn't support "...ON UPDATE..." for fields, set them all up here.
+    //
+
+    // Automatically set created datetime for current timestamp upon insert
+    //$result = db_query('CREATE TRIGGER {fdvegan_person}_insert_tr BEFORE INSERT ON {fdvegan_person} FOR EACH ROW BEGIN SET NEW.created=NOW()');
+
+    // Automatically update 'updated' to current timestamp whenever a row is changed
+    $result = db_query('ALTER TABLE {fdvegan_person} MODIFY updated TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP');
+    $result = db_query('ALTER TABLE {fdvegan_movie} MODIFY updated TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP');
+    $result = db_query('ALTER TABLE {fdvegan_cast_list} MODIFY updated TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP');
+    $result = db_query('ALTER TABLE {fdvegan_connections} MODIFY updated TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP');
+    $result = db_query('ALTER TABLE {fdvegan_process_status} MODIFY updated TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP');
+    $result = db_query('ALTER TABLE {fdvegan_tag} MODIFY updated TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP');
+    $result = db_query('ALTER TABLE {fdvegan_media} MODIFY updated TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP');
+
+    // Now do all the initial DB data inserts.
+
+    // Insert list of all possible person tags.
+    $sql = <<<__SQL__
+INSERT INTO {fdvegan_tag} (tag_name, created) VALUES
+  ('vegan', CURRENT_TIMESTAMP), 
+  ('vegetarian', CURRENT_TIMESTAMP),
+  ('veg-friendly', CURRENT_TIMESTAMP),
+  ('actor', CURRENT_TIMESTAMP),
+  ('actor-tv', CURRENT_TIMESTAMP),
+  ('director', CURRENT_TIMESTAMP),
+  ('writer', CURRENT_TIMESTAMP),
+  ('musician', CURRENT_TIMESTAMP),
+  ('singer', CURRENT_TIMESTAMP),
+  ('comedian', CURRENT_TIMESTAMP),
+  ('athlete', CURRENT_TIMESTAMP),
+  ('activist', CURRENT_TIMESTAMP),
+  ('scientist', CURRENT_TIMESTAMP),
+  ('model', CURRENT_TIMESTAMP),
+  ('political', CURRENT_TIMESTAMP),
+  ('celebrity', CURRENT_TIMESTAMP),
+  ('adult-rated', CURRENT_TIMESTAMP);
+__SQL__;
+    $result = db_query($sql);
+
+    // Insert list of all possible movie genres.
+    $sql = <<<__SQL__
+INSERT INTO {fdvegan_genre} (genre_name, created) VALUES
+  ('Action', CURRENT_TIMESTAMP), 
+  ('Adventure', CURRENT_TIMESTAMP),
+  ('Animation', CURRENT_TIMESTAMP),
+  ('Comedy', CURRENT_TIMESTAMP),
+  ('Crime', CURRENT_TIMESTAMP),
+  ('Documentary', CURRENT_TIMESTAMP),
+  ('Drama', CURRENT_TIMESTAMP),
+  ('Family', CURRENT_TIMESTAMP),
+  ('Fantasy', CURRENT_TIMESTAMP),
+  ('History', CURRENT_TIMESTAMP),
+  ('Horror', CURRENT_TIMESTAMP),
+  ('Music', CURRENT_TIMESTAMP),
+  ('Mystery', CURRENT_TIMESTAMP),
+  ('Romance', CURRENT_TIMESTAMP),
+  ('Science Fiction', CURRENT_TIMESTAMP),
+  ('TV Movie', CURRENT_TIMESTAMP),
+  ('Thriller', CURRENT_TIMESTAMP),
+  ('War', CURRENT_TIMESTAMP),
+  ('Western', CURRENT_TIMESTAMP);
+__SQL__;
+    $result = db_query($sql);
+
+    // Insert film actors.
+/* Data secondarily dumped via:
+SELECT CONCAT('  (', 
+              IFNULL(`tmdbid`,'NULL'), 
+              ', ', 
+              IF(`tmdb_image_path` IS NULL or `tmdb_image_path` = '','NULL', CONCAT('''',`tmdb_image_path`,'''')), 
+              ', ', 
+              IF(`imdb_id` IS NULL or `imdb_id` = '','NULL', CONCAT('''',`imdb_id`,'''')), 
+              ', ', 
+              IF(`full_name` IS NULL or `full_name` = '','''''', CONCAT('''',`full_name`,'''')), 
+              ', ', 
+              IF(`first_name` IS NULL or `first_name` = '','''''', CONCAT('''',`first_name`,'''')), 
+              ', ', 
+              IF(`middle_name` IS NULL or `middle_name` = '','''''', CONCAT('''',`middle_name`,'''')), 
+              ', ', 
+              IF(`last_name` IS NULL or `last_name` = '','''''', CONCAT('''',`last_name`,'''')), 
+              ', ', 
+              IF(`gender` IS NULL or `gender` = '','NULL', CONCAT('''',`gender`,'''')), 
+              ', ', 
+              IFNULL(`rating`,'NULL'), 
+              ', ', 
+              IF(`homepage_url` IS NULL or `homepage_url` = '','NULL', CONCAT('''',`homepage_url`,'''')), 
+              ', ', 
+              'NULL', 
+              ', ', 
+              IF(`birthplace` IS NULL or `birthplace` = '','NULL', CONCAT('''',`birthplace`,'''')), 
+              ', ', 
+              IF(`birthday` IS NULL or `birthday` = '','NULL', CONCAT('''',`birthday`,'''')), 
+              ', ', 
+              IF(`deathday` IS NULL or `deathday` = '','NULL', CONCAT('''',`deathday`,'''')), 
+              ', ',  
+              'CURRENT_TIMESTAMP', 
+       '), ' 
+       ) insert_stmt_rows 
+  FROM dr_fdvegan_person 
+ ORDER BY person_id ASC
+;
+*/
+    $sql = <<<__SQL__
+INSERT INTO {fdvegan_person} (`tmdbid`, `tmdb_image_path`, `imdb_id`, `full_name`, `first_name`, `middle_name`, `last_name`, `gender`, `rating`, `homepage_url`, `biography`, `birthplace`, `birthday`, `deathday`, `created`) VALUES 
+  (52971, NULL, 'nm1303433', 'John Abraham', 'John', '', 'Abraham', 'M', 0, NULL, NULL, 'Kochi, Kerala, India', '1972-12-17', NULL, CURRENT_TIMESTAMP), 
+  (56683, NULL, 'nm0001898', 'Bryan Adams', 'Bryan', '', 'Adams', 'M', 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (1893, '/kPNMpiZHsAzeQar4DiNsrekwHBU.jpg', 'nm0000729', 'Casey Affleck', 'Casey', '', 'Affleck', 'M', 3539, NULL, NULL, 'Falmouth, Massachusetts, USA', '1975-08-12', NULL, CURRENT_TIMESTAMP), 
+  (1219150, NULL, 'nm0017875', 'Grant Aleksander', 'Grant', '', 'Aleksander', 'M', 8, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (1228789, NULL, 'nm0018396', 'Eliana Alexander', 'Eliana', '', 'Alexander', 'F', 0, NULL, NULL, 'Mexico City, Distrito Federal, Mexico', '1969-12-14', NULL, CURRENT_TIMESTAMP), 
+  (932695, NULL, 'nm1847500', 'Olivia Alexander', 'Olivia', 'Usey', 'Alexander', 'F', 0, NULL, NULL, 'Louisiana, USA', '1988-05-17', NULL, CURRENT_TIMESTAMP), 
+  (552531, NULL, 'nm1209140', 'Mikko Alanne', 'Mikko', '', 'Alanne', 'M', 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (64188, NULL, 'nm0016332', 'Damon Albarn', 'Damon', '', 'Albarn', 'M', 0, NULL, NULL, 'Whitechapel, London, England, UK', '1968-03-23', NULL, CURRENT_TIMESTAMP), 
+  (2179, NULL, 'nm0000751', 'Suzy Amis', 'Suzy', '', 'Amis', 'F', 0, NULL, NULL, 'Oklahoma City, Oklahoma, USA', '1962-01-05', NULL, CURRENT_TIMESTAMP), 
+  (1450827, NULL, 'nm2405736', 'Meggan Anderson', 'Meggan', '', 'Anderson', 'F', 0, 'https://www.meggananderson.com/', NULL, 'Honolulu, Hawaii, USA', '1984-07-31', NULL, CURRENT_TIMESTAMP), 
+  (6736, '/oK3T60cs69BUbphRSnxhteZQh7m.jpg', 'nm0000097', 'Pamela Anderson', 'Pamela', '', 'Anderson', 'F', 2031, 'https://www.pamelaandersonfoundation.org/', NULL, 'Ladysmith, British Columbia, Canada', '1967-07-01', NULL, CURRENT_TIMESTAMP), 
+  (1482727, NULL, 'nm2837160', 'Diana Angelson', 'Diana', '', 'Angelson', 'F', 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (215486, NULL, 'nm0004712', 'Fiona Apple', 'Fiona', '', 'Apple', 'F', 0, NULL, NULL, 'New York City, New York, USA', '1977-09-13', NULL, CURRENT_TIMESTAMP), 
+  (18979, NULL, 'nm0000775', 'Christina Applegate', 'Christina', '', 'Applegate', 'F', 0, NULL, NULL, 'Hollywood, Los Angeles, California, USA', '1971-11-25', NULL, CURRENT_TIMESTAMP), 
+  (1196007, NULL, 'nm2670001', 'Crystal Arnette', 'Crystal', '', 'Arnette', 'F', 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (1227690, NULL, 'nm0036408', 'Debbie Arnold', 'Debbie', '', 'Arnold', 'F', 210, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (6431, NULL, 'nm0004716', 'Darren Aronofsky', 'Darren', '', 'Aronofsky', 'M', 0, NULL, NULL, 'Brooklyn, New York City, New York, USA', '1969-02-12', NULL, CURRENT_TIMESTAMP), 
+  (2165, '/rQMQYQUF9QzD6oDfkP6tsjmyZhS.jpg', 'nm0000275', 'Rosanna Arquette', 'Rosanna', '', 'Arquette', 'F', 3890, NULL, NULL, 'New York City, New York, USA', '1959-08-10', NULL, CURRENT_TIMESTAMP), 
+  (1215561, NULL, 'nm0037160', 'Maria Celeste Arraras', 'Maria', 'Celeste', 'Arraras', 'F', 0, NULL, NULL, 'Mayaguez, Puerto Rico', '1960-09-27', NULL, CURRENT_TIMESTAMP), 
+  (137704, NULL, 'nm1479214', 'Richard Ashcroft', 'Richard', '', 'Ashcroft', 'M', 0, NULL, NULL, 'Billinge, Lancashire, England, UK', '1971-09-11', NULL, CURRENT_TIMESTAMP), 
+  (154997, '/o5Yw3Oh8GiG8VYg8ZGlORhG9c8C.jpg', 'nm1534694', 'Allisyn Ashley Arm', 'Allisyn', 'Ashley', 'Arm', 'F', 0, NULL, NULL, 'Glendale, California, USA', '1996-04-25', NULL, CURRENT_TIMESTAMP), 
+  (1221053, NULL, 'nm0025435', 'Simon Amstell', 'Simon', '', 'Amstell', 'M', 0, NULL, NULL, 'Essex, England, UK', '1979-11-29', NULL, CURRENT_TIMESTAMP), 
+  (50841, NULL, 'nm1193699', 'Nadja Auermann', 'Nadja', '', 'Auermann', 'F', 0, NULL, NULL, 'West Berlin, West Germany', '1971-03-19', NULL, CURRENT_TIMESTAMP), 
+  (1806996, NULL, 'nm4962062', 'Patrik Baboumian', 'Patrik', '', 'Baboumian', 'M', 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (10458, NULL, 'nm0000819', 'Barbara Bach', 'Barbara', '', 'Bach', 'F', 0, NULL, NULL, 'Queens, New York City, New York, USA', '1947-08-27', NULL, CURRENT_TIMESTAMP), 
+  (NULL, NULL, 'nm6653862', 'Leslie Bach', 'Leslie', '', 'Bach', NULL, 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (NULL, NULL, 'nm3725744', 'Richard Bach', 'Richard', '', 'Bach', 'M', 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (NULL, NULL, 'nm0046183', 'Anette Badland', 'Anette', '', 'Badland', 'F', 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (4237, NULL, 'nm0004721', 'Erykah Badu', 'Erykah', '', 'Badu', 'F', 0, NULL, NULL, 'Dallas, Texas, USA', '1971-02-26', NULL, CURRENT_TIMESTAMP), 
+  (7447, '/cRJqOew3Tqp629cV3seyvBdzwuM.jpg', 'nm0000285', 'Alec Baldwin', 'Alec', '', 'Baldwin', 'M', 3503, 'https://www.alecbaldwin.com/', NULL, 'Amityville, New York, USA', '1958-04-03', NULL, CURRENT_TIMESTAMP), 
+  (1887324, NULL, 'nm5206740', 'Ireland Baldwin', 'Ireland', 'Eliesse', 'Baldwin', 'F', 0, NULL, NULL, 'Los Angeles, California, USA', '1995-10-23', NULL, CURRENT_TIMESTAMP), 
+  (1543490, NULL, 'nm3703061', 'Eddie Bammeke', 'Eddie', '', 'Bammeke', 'M', 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (1871496, NULL, 'nm6516859', 'Tia Blanco', 'Tia', '', 'Blanco', 'F', 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (3783, NULL, 'nm0000003', 'Brigitte Bardot', 'Brigitte', '', 'Bardot', 'F', 0, NULL, NULL, 'Paris, France', '1934-09-28', NULL, CURRENT_TIMESTAMP), 
+  (1714, '/usYsWRccdM4Y00RycsQFFOdNVe.jpg', 'nm0055845', 'Angus Barnett', 'Angus', '', 'Barnett', 'M', 0, NULL, NULL, NULL, '1963', NULL, CURRENT_TIMESTAMP), 
+  (1224350, NULL, 'nm0055003', 'Travis Barker', 'Travis', '', 'Barker', 'M', 0, NULL, NULL, 'Fontana, California, USA', '1975-11-14', NULL, CURRENT_TIMESTAMP), 
+  (326, '/xpv6NgpY0mDr5QSWjZLXy5KlFn9.jpg', 'nm0000107', 'Kim Basinger', 'Kim', '', 'Basinger', 'F', 3753, NULL, NULL, 'Athens, Georgia, USA', '1953-12-08', NULL, CURRENT_TIMESTAMP), 
+  (105159, '/oDV5AgvOLXgsa62pAVrmpLBRHlq.jpg', 'nm0060406', 'Alexandra Bastedo', 'Alexandra', '', 'Bastedo', 'F', 0, NULL, NULL, NULL, '1946-03-09', NULL, CURRENT_TIMESTAMP), 
+  (35780, NULL, 'nm0000821', 'Amitabh Bachchan', 'Amitabh', '', 'Bachchan', 'M', 0, NULL, NULL, 'Uttar Pradesh, India', '1942-10-11', NULL, CURRENT_TIMESTAMP), 
+  (13725, '/wJiZpCZzXyJDwkdudIZ14Wii7lt.jpg', 'nm0000880', 'Meredith Baxter', 'Meredith', '', 'Baxter', 'F', 0, NULL, NULL, 'South Pasadena, California, USA', '1947-06-21', NULL, CURRENT_TIMESTAMP), 
+  (123797, NULL, 'nm0064169', 'Maureen Beattie', 'Maureen', '', 'Beattie', NULL, 210, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (42157, '/A4NoJX3sno876yc7scnYAZNBuVF.jpg', 'nm0000893', 'Ed Begley Jr.', 'Ed', '', 'Begley', 'M', 1761, NULL, NULL, 'Los Angeles, California, USA', '1949-09-16', NULL, CURRENT_TIMESTAMP), 
+  (40462, '/9DoDVUkoXhT3O2R1RymPlOfUryl.jpg', 'nm0068338', 'Kristen Bell', 'Kristen', '', 'Bell', 'F', 5000, NULL, NULL, 'Huntington Woods, Michigan, USA', '1980-07-18', NULL, CURRENT_TIMESTAMP), 
+  (58264, '/10gyEwU99ajejVnea4pK6o5SBmJ.jpg', 'nm0070767', 'Dirk Benedict', 'Dirk', '', 'Benedict', 'M', 0, NULL, NULL, 'Helena, Montana, USA', '1945-03-01', NULL, CURRENT_TIMESTAMP), 
+  (37934, NULL, 'nm0071275', 'Andre 3000', 'Andre', '', 'Benjamin', 'M', 0, NULL, NULL, 'Atlanta, Georgia, USA', '1975-05-27', NULL, CURRENT_TIMESTAMP), 
+  (11850, '/wzRihM7eZyCyAuKpgyBewCzDRWJ.jpg', 'nm0000298', 'Candice Bergen', 'Candice', '', 'Bergen', 'F', 2059, NULL, NULL, 'Beverly Hills, Los Angeles, California, USA', '1946-05-09', NULL, CURRENT_TIMESTAMP), 
+  (1851333, NULL, 'nm0075414', 'Sandra Berkin', 'Sandra', '', 'Berkin', 'F', 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (1108120, NULL, 'nm1017633', 'Alia Bhatt', 'Alia', '', 'Bhatt', 'F', 0, NULL, NULL, NULL, '1993-03-15', NULL, CURRENT_TIMESTAMP), 
+  (167640, '/4Jat3qEs5KJSzti97WGzEXdSu7K.jpg', 'nm0080524', 'Mayim Bialik', 'Mayim', '', 'Bialik', 'F', 4945, 'https://www.mayimbialik.net/', NULL, 'San Diego, California, USA', '1975-12-12', NULL, CURRENT_TIMESTAMP), 
+  (37366, '/tIoU3CSpjnLi79UfBgNjXNQM1GN.jpg', 'nm0000304', 'Linda Blair', 'Linda', '', 'Blair', 'F', 682, NULL, NULL, 'St. Louis, Missouri, USA', '1959-01-22', NULL, CURRENT_TIMESTAMP), 
+  (1215890, NULL, 'nm0086512', 'Christopher Blake', 'Christopher', '', 'Blake', 'M', 0, NULL, NULL, 'London - England - UK', '1949-08-23', '2004-12-11', CURRENT_TIMESTAMP), 
+  (NULL, NULL, 'nm0086828', 'Gayle Blakeney', 'Gayle', '', 'Blakeney', 'F', 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (NULL, NULL, 'nm0086829', 'Gillian Blakeney', 'Gillian', '', 'Blakeney', NULL, 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (1230706, NULL, 'nm0113553', 'Faith Brown', 'Faith', '', 'Brown', NULL, 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (39012, '/jBmV2Q5htw1TEBABPuCc5BeBn9h.jpg', 'nm0000953', 'Peter Bogdanovich', 'Peter', '', 'Bogdanovich', 'M', 900, NULL, NULL, 'Kingston, New York, USA', '1939-07-30', NULL, CURRENT_TIMESTAMP), 
+  (3232, '/wP9edkzvr5vIIVaocRf70vdRcdW.jpg', 'nm0000956', 'Lisa Bonet', 'Lisa', '', 'Bonet', 'F', 906, NULL, NULL, 'San Francisco, California, USA', '1967-11-16', NULL, CURRENT_TIMESTAMP), 
+  (44032, NULL, 'nm0088253', 'Blueberry Borovnisa', 'Blueberry', '', 'Borovnisa', NULL, 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (17123, '/1UdRVGrbYF7CqQmKABTruiRu7Mx.jpg', 'nm0101740', 'Darren Boyd', 'Darren', '', 'Boyd', 'M', 0, NULL, NULL, 'Hastings, East Sussex, England', '1971-01-30', NULL, CURRENT_TIMESTAMP), 
+  (1773115, NULL, 'nm0102644', 'Tracy Brabin', 'Tracy', '', 'Brabin', NULL, 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (1226307, NULL, 'nm0103474', 'Cathryn Bradshaw', 'Cathryn', '', 'Bradshaw', 'F', 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (59919, '/WwyYUbZYq4YJ7Zh7KTy1klJNso.jpg', 'nm1258970', 'Russell Brand', 'Russell', '', 'Brand', 'M', 2932, 'http://www.russellbrand.tv', NULL, 'Grays, Essex, England, UK', '1975-06-04', NULL, CURRENT_TIMESTAMP), 
+  (NULL, NULL, 'nm4130281', 'Brendan Brazier', 'Brendan', '', 'Brazier', 'M', 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (2222, '/xv6sDCHxHvBgCK4y96H32kxgcdr.jpg', 'nm0000977', 'Beau Bridges', 'Beau', '', 'Bridges', 'M', 1167, NULL, NULL, 'Hollywood, California, USA', '1941-12-09', NULL, CURRENT_TIMESTAMP), 
+  (942808, NULL, 'nm0001973', 'Christie Brinkley', 'Christie', '', 'Brinkley', 'F', 0, NULL, NULL, 'Detroit, Michigan, USA', '1954-02-02', NULL, CURRENT_TIMESTAMP), 
+  (62913, '/fBSTmz2FKyXmLRq67MV162xdkkw.jpg', 'nm1242613', 'Sage Brocklebank', 'Sage', '', 'Brocklebank', 'M', 0, NULL, NULL, NULL, '1978-01-14', NULL, CURRENT_TIMESTAMP), 
+  (NULL, NULL, 'nm2759026', 'Asher Brown', 'Asher', '', 'Brown', 'M', 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (189418, '/o11qsp3UeR3qeHqAopAcMpyJaeL.jpg', 'nm0117197', 'Nicola Bryant', 'Nicola', '', 'Bryant', 'F', 0, NULL, NULL, NULL, '1962-10-11', NULL, CURRENT_TIMESTAMP), 
+  (1784404, NULL, 'nm8577515', 'Samantha Bulka', 'Samantha', '(Sammy)', 'Bulka', 'F', 0, 'https://www.sammybulka.com', NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (105234, NULL, 'nm1592273', 'Hunter Burgan', 'Hunter', '', 'Burgan', 'M', 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (1911673, NULL, 'nm5305981', 'Camila Cabello', 'Camila', '', 'Cabello', 'F', 0, '', NULL, 'Cuba', '1997-03-03', NULL, CURRENT_TIMESTAMP), 
+  (2710, '/zy2foCd8PEtvCcsX48cROdQdDLB.jpg', 'nm0000116', 'James Cameron', 'James', '', 'Cameron', 'M', 2620, NULL, NULL, 'Kapuskasing, Ontario, Canada', '1954-08-16', NULL, CURRENT_TIMESTAMP), 
+  (78041, '/wmOBAteUmZyu2jjZd1AN6pmkQvi.jpg', 'nm0131647', 'Kirk Cameron', 'Kirk', '', 'Cameron', 'M', 700, NULL, NULL, 'Panorama City, Los Angeles, California, U.S.', '1970-10-12', NULL, CURRENT_TIMESTAMP), 
+  (198, '/u1fr7FgO1rw7lLLst64LPoqAw9x.jpg', 'nm0144657', 'Dan Castellaneta', 'Dan', '', 'Castellaneta', 'M', 5446, NULL, NULL, 'Chicago - Illinois - USA', '1957-10-29', NULL, CURRENT_TIMESTAMP), 
+  (36628, NULL, 'nm0215487', 'Kate del Castillo', 'Kate', '', 'Castillo', 'F', 0, '', NULL, 'Mexico City, Distrito Federal, Mexico', '1972-10-23', NULL, CURRENT_TIMESTAMP), 
+  (1805370, NULL, 'nm3190246', 'Richa Chadha', 'Richa', '', 'Chadha', 'F', 0, '', NULL, '', '', NULL, CURRENT_TIMESTAMP), 
+  (83002, '/eyv98YlnRuOOUNCD1U6w2yZDRA2.jpg', 'nm1567113', 'Jessica Chastain', 'Jessica', '', 'Chastain', 'F', 5909, 'https://jessica-chastain.com/', NULL, 'Northern California, USA', '1977-03-24', NULL, CURRENT_TIMESTAMP), 
+  (1277580, NULL, 'nm0154539', 'Cesar Chavez', 'Cesar', '', 'Chavez', 'M', 0, NULL, NULL, 'Yuma, Arizona, USA', '1927-03-31', '1993-04-23', CURRENT_TIMESTAMP), 
+  (1512268, NULL, 'nm4129982', 'Robert Cheeke', 'Robert', '', 'Cheeke', 'M', 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (1666, '/73SExI7sunDfkSQmHQhUMryUSR2.jpg', 'nm0001046', 'Julie Christie', 'Julie', 'Frances', 'Christie', 'F', 1503, NULL, NULL, 'Chabua, Assam, India', '1941-04-14', NULL, CURRENT_TIMESTAMP), 
+  (60227, '/fQe1b5nRuzSo0vBS2RfKSvPCILj.jpg', 'nm0996651', 'Greg Cipes', 'Greg', 'Michael', 'Cipes', 'M', 0, NULL, NULL, 'Coral Springs, Florida, U.S.', '1980-01-04', NULL, CURRENT_TIMESTAMP), 
+  (53487, '/yAeL74gyI5ikDCkcj7VcjqXbHbe.jpg', 'nm0164891', 'Margi Clarke', 'Margi', '', 'Clarke', 'F', 0, 'http://www.margiclarke.com/', NULL, 'Liverpool', '1954', NULL, CURRENT_TIMESTAMP), 
+  (116341, NULL, 'nm0001051', 'Bill Clinton', 'Bill', '', 'Clinton', 'M', 0, NULL, NULL, 'Hope, Arkansas, USA', '1946-08-19', NULL, CURRENT_TIMESTAMP), 
+  (1361198, NULL, 'nm0166911', 'Chelsea Clinton', 'Chelsea', 'Victoria', 'Clinton', 'F', 0, NULL, NULL, 'Little Rock, Arkansas, USA', '1980-02-27', NULL, CURRENT_TIMESTAMP), 
+  (232724, NULL, 'nm1218524', 'Phil Collen', 'Phil', 'Kenneth', 'Collen', 'M', 0, NULL, NULL, 'London, England, UK', '1957-12-08', NULL, CURRENT_TIMESTAMP), 
+  (1870552, NULL, 'nm3018966', 'Matthew Coote', 'Matthew', '', 'Coote', 'M', 700, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (82853, NULL, 'nm0180735', 'Bo Corre', 'Bo', '', 'Corre', NULL, 700, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (1298360, NULL, 'nm1209545', 'Laverne Cox', 'Laverne', '', 'Cox', 'F', 0, NULL, NULL, 'Mobile, Alabama, USA', '1972-05-29', NULL, CURRENT_TIMESTAMP), 
+  (58370, '/agkUNwyootzekZzeEJ4oV68oRJx.jpg', 'nm1468739', 'Amanda Crew', 'Amanda', '', 'Crew', 'F', 2184, 'http://www.amanda-crew.com/', NULL, 'Langley, British Columbia, Canada', '1986-06-05', NULL, CURRENT_TIMESTAMP), 
+  (2505, '/tbpxLxuVunrNiVUJVORwgAZJQXl.jpg', 'nm0000342', 'James Cromwell', 'James', 'Oliver', 'Cromwell', 'M', 3441, NULL, NULL, 'Los Angeles, California, USA', '1940-01-27', NULL, CURRENT_TIMESTAMP), 
+  (NULL, NULL, 'nm5280035', 'Matt Crotteau', 'Matt', '', 'Crotteau', 'M', 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (117557, NULL, 'nm0189661', 'Sara Crowe', 'Sara', '', 'Crowe', 'F', 0, NULL, NULL, NULL, '1966-03-22', NULL, CURRENT_TIMESTAMP), 
+  (NULL, NULL, 'nm5010137', 'Kalel Cullen', 'Kalel', '(Kitten)', 'Cullen', 'F', 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (10697, NULL, 'nm0001086', 'Alan Cumming', 'Alan', '', 'Cumming', 'M', 0, NULL, NULL, 'Aberfeldy, Perthshire, Scotland, UK', '1965-01-27', NULL, CURRENT_TIMESTAMP), 
+  (89068, NULL, 'nm2061350', 'Luke Cummo', 'Luke', '', 'Cummo', 'M', 0, NULL, NULL, 'New Hyde Park, New York, USA', '1980-04-27', NULL, CURRENT_TIMESTAMP), 
+  (53862, NULL, 'nm0192505', 'Kaley Cuoco', 'Kaley', '', 'Cuoco', 'F', 0, NULL, NULL, 'Camarillo, California, USA', '1985-11-30', NULL, CURRENT_TIMESTAMP), 
+  (76594, NULL, 'nm1415323', 'Miley Cyrus', 'Miley', '', 'Cyrus', 'F', 0, NULL, NULL, 'Franklin, Tennessee, USA', '1992-11-23', NULL, CURRENT_TIMESTAMP), 
+  (12836, '/wWm9eDLuPDw29R76KAjg6gIE9dS.jpg', 'nm0001101', 'Ted Danson', 'Ted', 'Bridge', 'Danson', 'M', 2430, NULL, NULL, 'San Diego, California, United States', '1947-12-29', NULL, CURRENT_TIMESTAMP), 
+  (NULL, NULL, 'nm2924150', 'Amy Jean Davis', 'Amy', 'Jean', 'Davis', 'F', 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (938972, NULL, 'nm0204171', 'Angela Davis', 'Angela', '', 'Davis', 'F', 0, NULL, NULL, 'Birmingham, Alabama, USA', '1944-01-26', NULL, CURRENT_TIMESTAMP), 
+  (62042, NULL, 'nm0204316', 'Carole Davis', 'Carole', 'Raphaelle', 'Davis', 'F', 0, NULL, NULL, 'London, England, UK', '1958-02-17', NULL, CURRENT_TIMESTAMP), 
+  (14, '/4LG2bFkqOzxzR1kpnoDcwIVuQTG.jpg', 'nm0001122', 'Ellen DeGeneres', 'Ellen', '', 'DeGeneres', 'F', 3024, 'https://www.shutterfly.com/ellen/', NULL, 'Metairie, Louisiana, USA', '1958-01-26', NULL, CURRENT_TIMESTAMP), 
+  (34199, '/1wDz8UVkG7rx6t96QKuMrKCo9wj.jpg', 'nm0215281', 'Thomas Dekker', 'Thomas', 'Alexander', 'Dekker', 'M', 3348, NULL, NULL, 'Las Vegas, Nevada, USA', '1987-12-28', NULL, CURRENT_TIMESTAMP), 
+  (NULL, NULL, 'nm9656946', 'Nimai Delgado', 'Nimai', '', 'Delgado', 'M', 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (1452124, NULL, 'nm3716653', 'Jason Derulo', 'Jason', 'Joel', 'Derulo', 'M', 0, NULL, NULL, 'Miami, Florida, USA', '1989-09-21', NULL, CURRENT_TIMESTAMP), 
+  (25933, '/30ILrNeoxW3yf7xoik8M5rypWDv.jpg', 'nm0221043', 'Emily Deschanel', 'Emily', 'Erin', 'Deschanel', 'F', 3602, NULL, NULL, 'Los Angeles - California - USA', '1976-10-11', NULL, CURRENT_TIMESTAMP), 
+  (518, '/zKuyzmKzPLG7RJo7lbbHjx6CCZc.jpg', 'nm0000362', 'Danny DeVito', 'Danny', 'Michael', 'DeVito', 'M', 8637, NULL, NULL, 'Asbury Park - New Jersey - USA', '1944-11-17', NULL, CURRENT_TIMESTAMP), 
+  (85, NULL, 'nm0000136', 'Johnny Depp', 'Johnny', '', 'Depp', 'M', 0, NULL, NULL, 'Kentucky', '1963-06-09', NULL, CURRENT_TIMESTAMP), 
+  (20381, '/j8BeJ5VL3jp7JWxgYlZPUscP6FC.jpg', 'nm1564087', 'Jenna Dewan', 'Jenna', 'Lee', 'Dewan', 'F', 1309, NULL, NULL, 'Hartford - Connecticut - USA', '1980-12-03', NULL, CURRENT_TIMESTAMP), 
+  (86069, NULL, 'nm1226448', 'Neha Dhupia', 'Neha', '', 'Dhupia', 'F', 0, NULL, NULL, 'Cochin, Kerala, India', '1980-08-27', NULL, CURRENT_TIMESTAMP), 
+  (6193, NULL, 'nm0000138', 'Leonardo DiCaprio', 'Leonardo', '', 'DiCaprio', 'M', 0, NULL, NULL, 'Hollywood, Los Angeles, California, USA', '1974-11-11', NULL, CURRENT_TIMESTAMP), 
+  (1562484, NULL, 'nm0225500', 'Amanda Dickinson', 'Amanda', '', 'Dickinson', 'F', 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (212739, NULL, 'nm0227657', 'Martin Dingle-Wall', 'Martin', '', 'Dingle-Wall', 'M', 0, NULL, NULL, NULL, '1971-07-22', NULL, CURRENT_TIMESTAMP), 
+  (22970, NULL, 'nm0227759', 'Peter Dinklage', 'Peter', '', 'Dinklage', 'M', 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (1527018, NULL, 'nm0232836', 'Jenny Donnison', 'Jenny', '', 'Donnison', NULL, 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (2391, '/d89cHhByE4kpzQcUB7z51YV3EjA.jpg', 'nm0000373', 'Michael Dorn', 'Michael', '', 'Dorn', 'M', 1783, NULL, NULL, 'Luling - Texas - USA', '1952-12-09', NULL, CURRENT_TIMESTAMP), 
+  (1197041, '/8t387WtyTuWkAgbRLBUrxquVL9W.jpg', 'nm0238107', 'Betty Driver', 'Betty', '', 'Driver', 'F', 700, NULL, NULL, NULL, '1920-05-20', '2011-10-15', CURRENT_TIMESTAMP), 
+  (12640, '/tvgkGpKXMz7SzjUkTwZ0FMjQxlO.jpg', 'nm0000141', 'David Duchovny', 'David', 'William', 'Duchovny', 'M', 5120, NULL, NULL, 'New York City - New York - USA', '1960-08-07', NULL, CURRENT_TIMESTAMP), 
+  (88132, NULL, 'nm0004889', 'Jermaine Dupri', 'Jermaine', '', 'Dupri', 'M', 0, NULL, NULL, 'Atlanta, Georgia, USA', '1972-09-23', NULL, CURRENT_TIMESTAMP), 
+  (39113, '/tufOtGCDO2R43YWeVx2j2uwYjVQ.jpg', 'nm0253705', 'Christine Elise', 'Christine', '', 'Elise', 'F', 3, NULL, NULL, 'Boston, Massachusetts, U.S.', '1965-02-12', NULL, CURRENT_TIMESTAMP), 
+  (55314, NULL, 'nm0253708', 'Kimberly Elise', 'Kimberly', '', 'Elise', 'F', 0, NULL, NULL, ' Minneapolis, Minnesota, USA', '1967-04-17', NULL, CURRENT_TIMESTAMP), 
+  (1251069, NULL, 'nm2812026', 'Nathalie Emmanuel', 'Nathalie', '', 'Emmanuel', 'F', 0, NULL, NULL, 'Southend-on-Sea, Essex, England, UK', '1989-03-02', NULL, CURRENT_TIMESTAMP), 
+  (16059, '/eirueGz9kvztT8SkuArnVV0RoLT.jpg', 'nm0272244', 'Pamelyn Ferdin', 'Pamelyn', '', 'Ferdin', 'F', 0, NULL, NULL, NULL, '1959-02-04', NULL, CURRENT_TIMESTAMP), 
+  (24264, NULL, 'nm0272401', 'Craig Ferguson', 'Craig', '', 'Ferguson', 'M', 0, NULL, NULL, 'Glasgow, Scotland, UK', '1962-05-17', NULL, CURRENT_TIMESTAMP), 
+  (95505, NULL, 'nm2596365', 'Jacqueline Fernandez', 'Jacqueline', '', 'Fernandez', 'F', 0, NULL, NULL, 'Colombo, Sri Lanka', '1985-06-02', NULL, CURRENT_TIMESTAMP), 
+  (11213, '/i9ou0K069ce8rL1OeWEZRukCBCk.jpg', 'nm0274913', 'Pam Ferris', 'Pam', 'Ann', 'Ferris', 'F', 569, NULL, NULL, 'Hannover, Germany', '1948-05-11', NULL, CURRENT_TIMESTAMP), 
+  (NULL, NULL, 'nm3919434', 'Waka Flocka Flame', 'Waka', 'Flocka', 'Flame', 'M', 0, NULL, NULL, 'Jamaica, Queens, New York City, New York, USA', '1986-05-31', NULL, CURRENT_TIMESTAMP), 
+  (195930, '/nW9wUciHIkTt0jrw07uuQUWtVnm.jpg', 'nm0283492', 'Jerome Flynn', 'Jerome', '', 'Flynn', 'M', 0, NULL, NULL, NULL, '1963-03-16', NULL, CURRENT_TIMESTAMP), 
+  (521, '/7yFPB60SpKQJA5wC1smdWjkDUED.jpg', 'nm0000150', 'Michael J. Fox', 'Michael', 'Andrew', 'Fox', 'M', 3494, 'https://www.michaeljfox.org/', NULL, 'Edmonton, Alberta, Canada', '1961-06-09', NULL, CURRENT_TIMESTAMP), 
+  (NULL, NULL, 'nm4130244', 'Kathy Freston', 'Kathy', '', 'Freston', 'F', 0, NULL, NULL, 'Greenville, NC, USA', NULL, NULL, CURRENT_TIMESTAMP), 
+  (1039458, NULL, 'nm1670028', 'Bruce Friedrich', 'Bruce', '', 'Friedrich', 'M', 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (10663, '/xfjBxJ1mbYXa9PdzP3YOKXhUIRP.jpg', 'nm0298386', 'Fiona Fullerton', 'Fiona', '', 'Fullerton', 'F', 0, NULL, NULL, NULL, '1956-10-10', NULL, CURRENT_TIMESTAMP), 
+  (1604636, NULL, 'nm6156990', 'Gary Francione', 'Gary', '', 'Francione', 'M', 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (71837, NULL, 'nm0004942', 'Daisy Fuentes', 'Daisy', '', 'Fuentes', 'F', 0, NULL, NULL, 'Havana, Cuba', '1966-11-17', NULL, CURRENT_TIMESTAMP), 
+  (1136517, NULL, 'nm2397981', 'Sia Furler', 'Sia', 'Kate Isobelle', 'Furler', 'F', 0, NULL, NULL, 'Adelaide, South Australia, Australia', '1975-12-18', NULL, CURRENT_TIMESTAMP), 
+  (16478, NULL, 'nm0301959', 'Johnny Galecki', 'Johnny', '', 'Galecki', 'M', 0, NULL, NULL, NULL, '1975-04-30', NULL, CURRENT_TIMESTAMP), 
+  (NULL, NULL, 'nm8683882', 'Josh Garcia', 'Josh', 'D', 'Garcia', 'M', 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (1205, '/wXj3kPwWFo8A9jDCtUVetXAR5Hf.jpg', 'nm0000152', 'Richard Gere', 'Richard', 'Tiffany', 'Gere', 'M', 6227, NULL, NULL, 'Philadelphia, Pennsylvania, USA', '1949-08-31', NULL, CURRENT_TIMESTAMP), 
+  (1214971, NULL, 'nm2966523', 'Roxy Shahidi', 'Rokhsaneh', '', 'Ghawam-Shahidi', 'F', 0, NULL, NULL, 'Manchester, Lancashire, England, UK', '1983-03-12', NULL, CURRENT_TIMESTAMP), 
+  (3282, '/pNimJ9cfqe9OeOLFl0k1pXkQ7SY.jpg', 'nm0004960', 'Sara Gilbert', 'Sara', '', 'Gilbert', 'F', 641, NULL, NULL, 'Santa Monica, California, USA', '1975-01-29', NULL, CURRENT_TIMESTAMP), 
+  (53585, NULL, 'nm0321096', 'Sheila Gish', 'Sheila', 'Anne', 'Gish', 'F', 0, NULL, NULL, 'Lincoln, England, United Kingdom', '1942-04-23', '2005-03-09', CURRENT_TIMESTAMP), 
+  (30614, NULL, 'nm0331516', 'Ryan Gosling', 'Ryan', '', 'Gosling', 'M', 0, NULL, NULL, 'London, Ontario, Canada', '1980-11-12', NULL, CURRENT_TIMESTAMP), 
+  (1024736, NULL, 'nm3716110', 'Ellie Goulding', 'Ellie', '', 'Goulding', 'F', 0, NULL, NULL, 'Hereford, Herefordshire, England, UK', '1986-12-30', NULL, CURRENT_TIMESTAMP), 
+  (226001, NULL, 'nm3812858', 'Ariana Grande', 'Ariana', '', 'Grande', 'F', 0, NULL, NULL, 'Boca Raton, Florida, USA', '1993-06-26', NULL, CURRENT_TIMESTAMP), 
+  (26780, '/9OxbMq6BxYdiF2peA9gvboQ2Nq7.jpg', 'nm0335349', 'Deborah Grant', 'Deborah', '', 'Grant', 'F', 0, NULL, NULL, 'London', '1947-02-22', NULL, CURRENT_TIMESTAMP), 
+  (NULL, NULL, NULL, 'Jane Grayson', 'Jane', '', 'Grayson', NULL, 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (215995, NULL, 'nm0338421', 'Jill Greenacre', 'Jill', '', 'Greenacre', NULL, 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (20095, NULL, 'nm0339233', 'Alex Greenwald', 'Alex', '', 'Greenwald', 'M', 0, NULL, NULL, 'Los Angeles, California, USA', '1979-10-09', NULL, CURRENT_TIMESTAMP), 
+  (1621411, NULL, 'nm0351568', 'Andrew Gunsberg', 'Andrew', '', 'Gunsberg', 'M', 0, NULL, NULL, 'London, England, UK', '1973', NULL, CURRENT_TIMESTAMP), 
+  (6840, '/40PVsGp5Wp5kbUhAefLHqjqbarc.jpg', 'nm0001306', 'Larry Hagman', 'Larry', 'Martin', 'Hagman', 'M', 226, NULL, NULL, 'Fort Worth, Texas, U.S.', '1931-09-21', '2012-11-23', CURRENT_TIMESTAMP), 
+  (137748, '/dyB9fdYCZLqPhB6PYUosIJBbrBE.jpg', 'nm0590267', 'Louisa Milwood-Haigh', 'Louisa', '', 'Milwood', 'F', 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (39121, NULL, 'nm0005240', 'Moby', 'Richard', 'Melville', 'Hall', 'M', 0, NULL, NULL, 'New York City, New York, USA', '1965-09-11', NULL, CURRENT_TIMESTAMP), 
+  (5306, NULL, 'nm0002120', 'Lasse Hallstrom', 'Lasse', '', 'Hallstrom', 'M', 0, NULL, NULL, 'Stockholm, Stockholms län, Sweden', '1946-06-02', NULL, CURRENT_TIMESTAMP), 
+  (589, '/ekNHIbvMUa9MkLUmWMY9V3lmRqy.jpg', 'nm0000435', 'Daryl Hannah', 'Daryl', '', 'Hannah', 'F', 3532, NULL, NULL, 'Chicago, Illinois, USA ', '1960-12-03', NULL, CURRENT_TIMESTAMP), 
+  (57755, '/1ecdooAHICUhCZKKEKlFtccEmTU.jpg', 'nm0000437', 'Woody Harrelson', 'Woody', 'Tracy', 'Harrelson', 'M', 9724, NULL, NULL, 'Midland - Texas - USA', '1961-07-23', NULL, CURRENT_TIMESTAMP), 
+  (17643, NULL, 'nm0616550', 'Mya Harrison', 'Mya', 'Marie', 'Harrison', 'F', 0, NULL, NULL, 'Washington, District of Columbia, USA', '1979-10-10', NULL, CURRENT_TIMESTAMP), 
+  (1813, NULL, 'nm0004266', 'Anne Hathaway', 'Anne', '', 'Hathaway', 'F', 0, NULL, NULL, 'Brooklyn, New York City, New York, USA', '1982-11-12', NULL, CURRENT_TIMESTAMP), 
+  (104495, NULL, 'nm0369898', 'Davey Havok', 'Davey', 'Paden', 'Havok', 'M', 0, NULL, NULL, 'Rochester, New York, USA', '1975-11-20', NULL, CURRENT_TIMESTAMP), 
+  (15788, '/jKG3trCa3RGE6h5yzjMOramfoed.jpg', 'nm0001329', 'Nigel Hawthorne', 'Nigel', 'Barnard', 'Hawthorne', 'M', 0, NULL, NULL, 'Hertfordshire, England, UK', '1929-04-05', '2001-12-26', CURRENT_TIMESTAMP), 
+  (6929, '/5piyjLaNRESJZ2Q8comMEjXqZBW.jpg', 'nm0001335', 'Tippi Hedren', 'Tippi', 'Kay', 'Hedren', 'F', 36, NULL, NULL, 'New Ulm, Minnesota, U.S', '1930-01-19', NULL, CURRENT_TIMESTAMP), 
+  (96066, NULL, 'nm2955013', 'Liam Hemsworth', 'Liam', '', 'Hemsworth', 'M', 0, NULL, NULL, 'Melbourne, Victoria, Australia', '1990-01-13', NULL, CURRENT_TIMESTAMP), 
+  (79897, NULL, 'nm0382137', 'Sherrie Hewson', 'Sherrie', '', 'Hewson', 'F', 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (4483, '/ffKPo8ATHVXME6cgA5BDyvy2df1.jpg', 'nm0000163', 'Dustin Hoffman', 'Dustin', 'Lee', 'Hoffman', 'M', 4794, NULL, NULL, 'Los Angeles, California, USA', '1937-08-08', NULL, CURRENT_TIMESTAMP), 
+  (234801, NULL, 'nm0394457', 'Mark Hoppus', 'Mark', '', 'Hoppus', 'M', 0, NULL, NULL, 'Ridgecrest, California, USA', '1972-03-15', NULL, CURRENT_TIMESTAMP), 
+  (NULL, NULL, 'nm4528828', 'Penny Horner', 'Penny', '', 'Horner', NULL, 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (182195, NULL, 'nm0005038', 'Chrissie Hynde', 'Chrissie', '', 'Hynde', NULL, 0, NULL, NULL, 'Akron, Ohio, USA', '1951-09-07', NULL, CURRENT_TIMESTAMP), 
+  (2231, NULL, 'nm0000168', 'Samuel L. Jackson', 'Samuel', 'L', 'Jackson', 'M', 0, NULL, NULL, 'Washington, DC', '1948-12-21', NULL, CURRENT_TIMESTAMP), 
+  (1351131, NULL, 'nm0416860', 'Reina James', 'Reina', '', 'James', 'F', 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (179598, NULL, 'nm0417062', 'Louise Jameson', 'Louise', '', 'Jameson', 'F', 0, NULL, NULL, 'Wanstead, London, England, UK', '1951-04-20', NULL, CURRENT_TIMESTAMP), 
+  (1118194, NULL, 'nm4651098', 'Vidyut Jamwal', 'Vidyut', '', 'Jamwal', 'M', 0, NULL, NULL, 'Jammu, Jammu and Kashmir, India', '1980-12-10', NULL, CURRENT_TIMESTAMP), 
+  (10696, NULL, 'nm0000463', 'Famke Janssen', 'Famke', '', 'Janssen', 'F', 0, NULL, NULL, 'Amstelveen, Netherlands', '1964-11-05', NULL, CURRENT_TIMESTAMP), 
+  (NULL, NULL, 'nm2706914', 'Al Jefferson', 'Al', '', 'Jefferson', 'M', 0, NULL, NULL, 'Monticello, Mississippi, USA', '1985-01-04', NULL, CURRENT_TIMESTAMP), 
+  (21730, NULL, 'nm0005053', 'Joan Jett', 'Joan', '', 'Jett', 'F', 0, NULL, NULL, 'Philadelphia, Pennsylvania, USA', '1958-09-22', NULL, CURRENT_TIMESTAMP), 
+  (1419927, NULL, 'nm3050184', 'Myq Kaplan', 'Myq', '', 'Kaplan', 'M', 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (78245, NULL, 'nm1372788', 'Shahid Kapoor', 'Shahid', '', 'Kapoor', 'M', 0, NULL, NULL, 'New Delhi, India', '1981-02-25', NULL, CURRENT_TIMESTAMP), 
+  (85040, NULL, 'nm2128238', 'Sonam Kapoor', 'Sonam', '', 'Kapoor', 'F', 0, NULL, NULL, 'Chembur, Maharashtra, India', '1985-06-09', NULL, CURRENT_TIMESTAMP), 
+  (967734, NULL, 'nm1800223', 'Tonya Kay', 'Tonya', '', 'Kay', 'F', 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (1199349, NULL, 'nm0447958', 'Cheryl Kennedy', 'Cheryl', '', 'Kennedy', 'F', 5, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (1252801, NULL, 'nm3160752', 'Emma Kenney', 'Emma', 'Rose', 'Kenney', 'F', 0, NULL, NULL, 'Manhattan, New York City, New York, USA', '1999-09-14', NULL, CURRENT_TIMESTAMP), 
+  (52763, NULL, 'nm0451148', 'Aamir Khan', 'Aamir', '', 'Khan', 'M', 0, NULL, NULL, 'Bombay, Maharashtra, India', '1965-03-14', NULL, CURRENT_TIMESTAMP), 
+  (122099, NULL, 'nm0451193', 'Chaka Khan', 'Chaka', '', 'Khan', 'F', 0, NULL, NULL, 'Great Lakes, Illinois, USA', '1953-03-23', NULL, CURRENT_TIMESTAMP), 
+  (76793, NULL, 'nm0451234', 'Irrfan Khan', 'Irrfan', '', 'Khan', 'M', 0, NULL, NULL, 'Jaipur, Rajasthan, India', '1967-01-07', NULL, CURRENT_TIMESTAMP), 
+  (15310, NULL, 'nm0452347', 'Anthony Kiedis', 'Anthony', '', 'Kiedis', 'M', 0, NULL, NULL, 'Grand Rapids, Michigan, USA', '1962-11-01', NULL, CURRENT_TIMESTAMP), 
+  (1660040, NULL, 'nm3857083', 'Jamie Kilstein', 'Jamie', '', 'Kilstein', 'M', 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (1280183, NULL, 'nm0454604', 'Coretta Scott King', 'Coretta', 'Scott', 'King', 'F', 0, NULL, NULL, 'Marion, Alabama, USA', '1927-04-27', '2006-01-30', CURRENT_TIMESTAMP), 
+  (NULL, NULL, 'nm2179442', 'Kathy Kolla', 'Kathy', '', 'Kolla', NULL, 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (1598403, NULL, 'nm3504519', 'Richie Kul', 'Richie', '', 'Kul', 'M', 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (85955, NULL, 'nm1069611', 'Emma Lahana', 'Emma', 'Kate', 'Lahana', 'F', 0, NULL, NULL, 'Auckland, New Zealand', '1984-06-27', NULL, CURRENT_TIMESTAMP), 
+  (4431, NULL, 'nm0001448', 'Jessica Lange', 'Jessica', '', 'Lange', 'F', 0, NULL, NULL, 'Cloquet, Minnesota, USA', '1949-04-20', NULL, CURRENT_TIMESTAMP), 
+  (NULL, NULL, 'nm6438048', 'Damian Lillard', 'Damian', '', 'Lillard', 'M', 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (NULL, NULL, NULL, 'Lindy Lawton', 'Lindy', '', 'Lawton', NULL, 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (161927, NULL, 'nm0500140', 'Carol Leifer', 'Carol', '', 'Leifer', 'F', 0, NULL, NULL, 'New York, USA', '1956-07-27', NULL, CURRENT_TIMESTAMP), 
+  (4939, NULL, 'nm0000495', 'Tea Leoni', 'Tea', '', 'Leoni', 'F', 0, NULL, NULL, 'New York City, New York, USA', '1966-02-25', NULL, CURRENT_TIMESTAMP), 
+  (7499, NULL, 'nm0001467', 'Jared Leto', 'Jared', '', 'Leto', 'M', 0, NULL, NULL, 'Bossier City, Louisiana, USA', '1971-12-26', NULL, CURRENT_TIMESTAMP), 
+  (NULL, NULL, 'nm0507006', 'Carl Lewis', 'Carl', '', 'Lewis', 'M', 0, NULL, NULL, 'Birmingham, Alabama, USA', '1961-07-01', NULL, CURRENT_TIMESTAMP), 
+  (216710, NULL, 'nm2452244', 'Leona Lewis', 'Leona', '', 'Lewis', 'F', 0, NULL, NULL, 'Islington, London, England, UK', '1985-04-03', NULL, CURRENT_TIMESTAMP), 
+  (95692, '/fsWr9YLsC0N9uUKaOPquZnqL8p5.jpg', 'nm0511614', 'Jennie Linden', 'Jennie', '', 'Linden', 'F', 0, NULL, NULL, NULL, '1939-12-08', NULL, CURRENT_TIMESTAMP), 
+  (NULL, NULL, 'nm2595936', 'Rachel Lindsay', 'Rachel', '', 'Lindsay', NULL, 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (100487, NULL, 'nm0482941', 'Debra Lamb', 'Debra', '', 'Lamb', 'F', 0, NULL, NULL, 'Portland, Oregon, USA', '1963-11-24', NULL, CURRENT_TIMESTAMP), 
+  (34901, '/2RFXqaFpeN9WmhfAyNaumz0rZUV.jpg', 'nm0525921', 'Joanna Lumley', 'Joanna', 'Lamond', 'Lumley', 'F', 1172, NULL, NULL, 'Srinagar, Jammu and Kashmir, British India', '1946-05-01', NULL, CURRENT_TIMESTAMP), 
+  (140367, NULL, 'nm2121541', 'Evanna Lynch', 'Evanna', '', 'Lynch', 'F', 0, NULL, NULL, 'Termonfeckin, Ireland', '1991-08-16', NULL, CURRENT_TIMESTAMP), 
+  (107380, '/5jtp6Ik58I0cmmXqlSBipFtpBfI.jpg', 'nm0531229', 'Cal Macaninch', 'Cal', '', 'Macaninch', 'M', 0, NULL, NULL, 'Govan, Glasgow, Scotland, UK', '1969', NULL, CURRENT_TIMESTAMP), 
+  (52139, NULL, 'nm0532235', 'Seth MacFarlane', 'Seth', '', 'MacFarlane', 'M', 0, NULL, NULL, 'Kent, Connecticut, USA', '1973-10-26', NULL, CURRENT_TIMESTAMP), 
+  (1235015, NULL, 'nm0532410', 'Alicia Machado', 'Alicia', 'Fajardo', 'Machado', 'F', 0, NULL, NULL, 'Maracay, Venezuela', '1976-12-06', NULL, CURRENT_TIMESTAMP), 
+  (2219, '/l8e9we9RmTsYgNpx4xqQIlMplLl.jpg', 'nm0001497', 'Tobey Maguire', 'Tobey', 'Vincent', 'Maguire', 'M', 4690, NULL, NULL, 'Santa Monica, California, USA', '1975-06-27', NULL, CURRENT_TIMESTAMP), 
+  (1701029, NULL, 'nm7770334', 'Bridget Malcolm', 'Bridget', '', 'Malcolm', 'F', 0, NULL, NULL, 'Perth, Western Australia, Australia', '1991-11-20', NULL, CURRENT_TIMESTAMP), 
+  (419327, NULL, 'nm0549995', 'Johnny Marr', 'Johnny', '', 'Marr', 'M', 0, NULL, NULL, 'Longsight, Manchester, England, UK', '1963-10-31', NULL, CURRENT_TIMESTAMP), 
+  (51072, NULL, 'nm0544718', 'Kate Mara', 'Kate', '', 'Mara', 'F', 0, NULL, NULL, 'Bedford, New York, USA', '1983-02-27', NULL, CURRENT_TIMESTAMP), 
+  (108916, NULL, 'nm1913734', 'Rooney Mara', 'Rooney', '', 'Mara', 'F', 0, NULL, NULL, 'Bedford, New York, USA', '1985-04-17', NULL, CURRENT_TIMESTAMP), 
+  (NULL, NULL, NULL, 'Charlotte Martin', 'Charlotte', '', 'Martin', NULL, 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (NULL, NULL, NULL, 'Belen Matheu', 'Belen', '', 'Matheu', 'F', 0, NULL, NULL, '', '', NULL, CURRENT_TIMESTAMP), 
+  (582704, NULL, 'nm1875458', 'Matisyahu', 'Matisyahu', 'Paul', 'Miller', NULL, 0, NULL, NULL, 'West Chester, Pennsylvania, USA', '1978-06-30', NULL, CURRENT_TIMESTAMP), 
+  (86105, '/v98iYgo9twKkh2aa1axgzVlCdaK.jpg', 'nm0562732', 'Bill Maynard', 'Bill', '', 'Maynard', 'M', 0, NULL, NULL, NULL, '1928-10-08', NULL, CURRENT_TIMESTAMP), 
+  (10215, NULL, 'nm0005200', 'Paul McCartney', 'Paul', '', 'McCartney', 'M', 0, NULL, NULL, 'Liverpool, Merseyside, England, UK', '1942-06-18', NULL, CURRENT_TIMESTAMP), 
+  (35597, NULL, 'nm0000189', 'Jenny McCarthy', 'Jenny', '', 'McCarthy', NULL, 0, NULL, NULL, 'Chicago, Illinois, USA', '1972-11-01', NULL, CURRENT_TIMESTAMP), 
+  (41689, '/cCZk8LXWcYs1UD9wHGHOktxyy8t.jpg', 'nm0001516', 'Rue McClanahan', 'Rue', '', 'McClanahan', 'F', 315, NULL, NULL, NULL, '1934-02-21', '2010-06-03', CURRENT_TIMESTAMP), 
+  (47654, '/vtp1wTbuxO9JfKP52xo0pjCOkh9.jpg', 'nm0001524', 'Paul McGann', 'Paul', '', 'McGann', 'M', 812, NULL, NULL, 'Liverpool, England', '1959-11-14', NULL, CURRENT_TIMESTAMP), 
+  (NULL, NULL, 'nm1495689', 'April McKay', 'April', '', 'McKay', 'F', 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (47298, '/eKr1DsWcv96ubRiX4DMycHhXZ4b.jpg', 'nm1736982', 'Nellie McKay', 'Nellie', '', 'McKay', 'F', 700, NULL, NULL, NULL, '1982-04-13', NULL, CURRENT_TIMESTAMP), 
+  (1327, '/c51mP46oPgAgFf7bFWVHlScZynM.jpg', 'nm0005212', 'Ian McKellen', 'Ian', 'Murray', 'McKellen', 'M', 2895, 'http://www.mckellen.com/', NULL, 'Burnley, England', '1939-05-25', NULL, CURRENT_TIMESTAMP), 
+  (77165, '/1oc5UW2OfoMNHW01vPcsytCZVeV.jpg', 'nm0571441', 'Virginia McKenna', 'Virginia', 'A.', 'McKenna', 'F', 0, NULL, NULL, 'London, England, UK', '1931-06-07', NULL, CURRENT_TIMESTAMP), 
+  (1220019, NULL, 'nm0575140', 'Amanda Mealing', 'Amanda', '', 'Mealing', 'F', 63, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (NULL, NULL, 'nm8921476', 'Sophia Miacova', 'Sophia', '', 'Miacova', 'F', 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (128206, '/pv0Bt2pJ40iQfoido2D8LI4Z0il.jpg', 'nm0584951', 'Lea Michele', 'Lea', '', 'Michele', 'F', 1110, NULL, NULL, NULL, '1986-08-29', NULL, CURRENT_TIMESTAMP), 
+  (29539, '/gTKHCescSG0IZRG4tW7lFqgEOKU.jpg', 'nm0589711', 'Spike Milligan', 'Spike', 'Alan', 'Milligan', 'M', 0, NULL, NULL, 'Ahmed Nagar, India', '1918-04-16', '2002-02-27', CURRENT_TIMESTAMP), 
+  (36819, '/aXXiQcIoFp7WywXDOsskfuLkRe3.jpg', 'nm0001539', 'Hayley Mills', 'Hayley', '', 'Mills', 'F', 27, NULL, NULL, NULL, '1946-04-18', NULL, CURRENT_TIMESTAMP), 
+  (NULL, NULL, 'nm1457728', 'Heather Mills', 'Heather', 'Anne', 'Mills', 'F', 0, NULL, NULL, 'Aldershot, Hampshire, England, UK', '1968-01-12', NULL, CURRENT_TIMESTAMP), 
+  (76313, '/kBSLmdZL6OrfcJPTYn3667iihvC.jpg', 'nm1508859', 'Daniella Monet', 'Daniella', '', 'Monet', 'F', 3, NULL, NULL, 'West Hills, Los Angeles, California, USA', '1989-03-01', NULL, CURRENT_TIMESTAMP), 
+  (550041, NULL, 'nm0598671', 'Shaun Monson', 'Shaun', '', 'Monson', NULL, 138, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (3416, '/eLNoOYnxvhpV0BMSkNNnyyo5In7.jpg', 'nm0000193', 'Demi Moore', 'Demi', 'Guynes', 'Moore', 'F', 4908, NULL, NULL, 'Roswell, New Mexico, US', '1962-11-11', NULL, CURRENT_TIMESTAMP), 
+  (NULL, NULL, NULL, 'Derin Moore', 'Derin', '', 'Moore', NULL, 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (131024, '/IYDeekY9Aeito7eT09rMZnNHVS.jpg', 'nm0001551', 'Alanis Morissette', 'Alanis', '', 'Morissette', 'F', 0, NULL, NULL, NULL, '1974-06-01', NULL, CURRENT_TIMESTAMP), 
+  (414041, NULL, 'nm0973541', 'Morrissey', 'Steven', 'Patrick', 'Morrissey', 'M', 0, NULL, NULL, 'Davyhulme, Manchester, England, UK', '1959-05-22', NULL, CURRENT_TIMESTAMP), 
+  (530, '/6gk8GmlfjW8ONS19KMeISp8Cqxf.jpg', 'nm0005251', 'Carrie-Anne Moss', 'Carrie', 'Anne', 'Moss', 'F', 4652, NULL, NULL, 'Burnaby, British Columbia, Canada', '1967-08-21', NULL, CURRENT_TIMESTAMP), 
+  (533007, NULL, 'nm0609017', 'Kate Moss', 'Kate', '', 'Moss', 'F', 18, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (1116017, NULL, 'nm0610298', 'Tia Mowry-Hardrict', 'Tia', 'Dashon', 'Mowry-Hardrict', 'F', 0, NULL, NULL, 'Gelnhausen, Hesse, Germany', '1978-07-06', NULL, CURRENT_TIMESTAMP), 
+  (122474, NULL, 'nm0610669', 'Jason Mraz', 'Jason', '', 'Mraz', 'M', 0, NULL, NULL, 'Mechanicsville, Virginia, USA', '1977-06-23', NULL, CURRENT_TIMESTAMP), 
+  (NULL, NULL, 'nm0615587', 'Jessica Muschamp', 'Jessica', '', 'Muschamp', 'F', 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (1218915, NULL, 'nm0620466', 'Bif Naked', 'Bif', '', 'Naked', 'F', 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (58478, '/8IyCgKbjDTBlIICz49igBskwssS.jpg', 'nm0005265', 'Kevin Nealon', 'Kevin', '', 'Nealon', 'M', 227, NULL, NULL, 'St. Louis, Missouri, U.S.', '1953-11-18', NULL, CURRENT_TIMESTAMP), 
+  (NULL, NULL, 'nm0623745', 'Marr Nealon', 'Marr', '', 'Nealon', NULL, 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (1239053, NULL, 'nm1813332', 'Daniel Negreanu', 'Daniel', '', 'Negreanu', NULL, 0, NULL, NULL, 'Toronto, Ontario, Canada', '1974-07-26', NULL, CURRENT_TIMESTAMP), 
+  (21037, NULL, 'nm0002239', 'Prince', 'Prince', 'Rogers', 'Nelson', NULL, 0, NULL, NULL, 'Minneapolis, Minnesota, USA', '1958-06-07', '2016-04-21', CURRENT_TIMESTAMP), 
+  (97187, NULL, 'nm1023092', 'Petra Nemcova', 'Petra', '', 'Nemcova', NULL, 0, NULL, NULL, 'Karviná, Czechoslovakia', '1979-06-24', '2016-04-21', CURRENT_TIMESTAMP), 
+  (219866, NULL, 'nm1069931', 'Ingrid Newkirk', 'Ingrid', '', 'Newkirk', NULL, 0, NULL, NULL, 'England, UK', '1949-06-11', NULL, CURRENT_TIMESTAMP), 
+  (3636, '/n6y6VxJKf0tNC2xFvbsAgcOeLbg.jpg', 'nm0000056', 'Paul Newman', 'Paul', 'Leonard', 'Newman', 'M', 2885, NULL, NULL, 'Shaker Heights, Ohio, USA', '1925-01-26', '2008-09-26', CURRENT_TIMESTAMP), 
+  (66623, NULL, 'nm1190513', 'Hayley Marie Norman', 'Hayley', 'Marie', 'Norman', NULL, 0, NULL, NULL, 'Thousand Oaks, California, USA', '1984-03-03', NULL, CURRENT_TIMESTAMP), 
+  (211605, NULL, 'nm0636067', 'Stephen North', 'Stephen', '', 'North', 'M', 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (1232028, NULL, 'nm0639818', 'Simon O\'Brien', 'Simon', '', 'O''Brien', 'M', 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (96288, NULL, 'nm0640351', 'Hazel O\'Connor', 'Hazel', '', 'O''Connor', 'F', 0, NULL, NULL, 'Coventry, England', '1955-05-16', NULL, CURRENT_TIMESTAMP), 
+  (228815, NULL, 'nm0640521', 'Sinead O\'Connor', 'Sinead', '', 'O''Connor', 'F', 0, NULL, NULL, 'Dublin, Ireland', '1966-12-08', NULL, CURRENT_TIMESTAMP), 
+  (1233836, NULL, 'nm0640982', 'Maureen O\'Farrell', 'Maureen', '', 'O''Farrell', NULL, 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (1322304, NULL, 'nm0641123', 'Shaunna O\'Grady', 'Shaunna', '', 'O\'Grady', 'F', 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (30765, '/9WEdGT6Vbp3qljdFlVDSncStZwX.jpg', 'nm0641817', 'Kate O\'Mara', 'Kate', '', 'O\'Mara', 'F', 0, NULL, NULL, 'Leicester, England', '1939-08-10', NULL, CURRENT_TIMESTAMP), 
+  (25540, '/ojy6psDO5f0O7N2RBxCVUImGrpD.jpg', 'nm0644897', 'Sandra Oh', 'Sandra', '', 'Oh', 'F', 3706, 'http://www.sandraoh.com/', NULL, 'Nepean - Ontario - Canada', '1971-07-20', NULL, CURRENT_TIMESTAMP), 
+  (NULL, NULL, 'nm7766694', 'Jahlil Okafor', 'Jahlil', '', 'Okafor', 'M', 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (NULL, NULL, 'nm5284923', 'Ellen Oleria', 'Ellen', '', 'Oleria', 'F', 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (132398, NULL, 'nm2510013', 'Bree Olson', 'Bree', '', 'Olson', 'F', 0, NULL, NULL, 'Houston, Texas, USA', '1986-10-07', NULL, CURRENT_TIMESTAMP), 
+  (82785, NULL, 'nm0652089', 'Emily Osment', 'Emily', '', 'Osment', 'F', 0, NULL, NULL, 'Los Angeles, California, USA', '1992-03-10', NULL, CURRENT_TIMESTAMP), 
+  (69098, '/1Sevgctbcf0FWN9ADqYTzwitMGe.jpg', 'nm0005289', 'Catherine Oxenberg', 'Catherine', '', 'Oxenberg', 'F', 0, NULL, NULL, 'New York City, New York, USA ', '1961-09-22', NULL, CURRENT_TIMESTAMP), 
+  (27578, NULL, 'nm0680983', 'Ellen Page', 'Ellen', '', 'Page', 'F', 0, NULL, NULL, 'Halifax, Nova Scotia, Canada', '1987-02-21', NULL, CURRENT_TIMESTAMP), 
+  (57298, '/u4EjcIhEsfNTNw5eyoSgpiLV7aF.jpg', 'nm0001594', 'Anne Parillaud', 'Anne', '', 'Parillaud', 'F', 16, NULL, NULL, 'Paris, France', '1960-05-06', NULL, CURRENT_TIMESTAMP), 
+  (80987, NULL, 'nm0663854', 'Karyn Parsons', 'Karyn', '', 'Parsons', 'F', 0, NULL, NULL, 'Hollywood, Los Angeles, California, USA', '1966-10-08', NULL, CURRENT_TIMESTAMP), 
+  (87469, '/8bwAnX0fMCgm3IGRZjuo9qpkN6A.jpg', 'nm1913997', 'Marcus Patrick', 'Marcus', '', 'Patrick', 'M', 0, NULL, NULL, 'Bath, England, UK', '1974-06-05', NULL, CURRENT_TIMESTAMP), 
+  (55567, '/tZHbL4yXkfyGYJ4uzb3wHZAwfMO.jpg', 'nm0000575', 'Alexandra Paul', 'Alexandra', 'Elizabeth', 'Paul', 'F', 568, NULL, NULL, 'New York City, New York, U.S.', '1963-07-29', NULL, CURRENT_TIMESTAMP), 
+  (53493, NULL, 'nm0671980', 'Kal Penn', 'Kal', '', 'Penn', 'M', 0, NULL, NULL, 'Montclair, New Jersey, USA', '1977-04-23', NULL, CURRENT_TIMESTAMP), 
+  (7301, '/8M8Bt20z0M587lrjkdXrEqYtQKU.jpg', 'nm0000578', 'Anthony Perkins', 'Anthony', '', 'Perkins', 'M', 1163, NULL, NULL, 'New York City, New York, USA', '1932-04-04', '1992-09-12', CURRENT_TIMESTAMP), 
+  (NULL, NULL, 'nm0674033', 'Polly Perkins', 'Polly', '', 'Perkins', 'F', 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (24203, '/8HKhVF3LVVmPkX9UDWlaBOmum4f.jpg', 'nm0674231', 'Rhea Perlman', 'Rhea', 'Jo', 'Perlman', 'F', 1263, NULL, NULL, 'Brooklyn, New York, USA', '1948-03-31', NULL, CURRENT_TIMESTAMP), 
+  (1168993, NULL, 'nm0675383', 'Mandy Perryment', 'Mandy', '', 'Perryment', 'F', 18, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (1160, '/nhfGgJMRJvAxIEm1JJM7DOYutwy.jpg', 'nm0000201', 'Michelle Pfeiffer', 'Michelle', 'Marie', 'Pfeiffer', 'F', 3862, NULL, NULL, 'Santa Ana, California, U.S.', '1958-04-29', NULL, CURRENT_TIMESTAMP), 
+  (73421, '/3pLkHUjOPbTGKjbS2zOHIa7I3zF.jpg', 'nm0001618', 'Joaquin Phoenix', 'Joaquin', 'Rafael', 'Phoenix', 'M', 4603, NULL, NULL, 'San Juan, Puerto Rico', '1974-10-28', NULL, CURRENT_TIMESTAMP), 
+  (96922, NULL, 'nm0681095', 'Rain Phoenix', 'Rain', '', 'Phoenix', 'F', 0, NULL, NULL, 'Crockett, Texas, USA', '1972-11-21', NULL, CURRENT_TIMESTAMP), 
+  (741, '/qfokbmRwRvmIVsLHScshxLPAB3C.jpg', 'nm0000203', 'River Phoenix', 'River', '', 'Phoenix', 'M', 520, NULL, NULL, 'Metolius, Oregon USA', '1970-08-23', '1993-10-31', CURRENT_TIMESTAMP), 
+  (34543, '/mKBiUY3QxsOK7tYD1j51p8MAUxK.jpg', 'nm0001619', 'Summer Phoenix', 'Summer', '', 'Phoenix', 'F', 0, NULL, NULL, NULL, '1978-12-10', NULL, CURRENT_TIMESTAMP), 
+  (287, '/kc3M04QQAuZ9woUvH3Ju5T7ZqG5.jpg', 'nm0000093', 'Brad Pitt', 'Brad', '', 'Pitt', 'M', 15207, NULL, NULL, 'Shawnee - Oklahoma - USA', '1963-12-18', NULL, CURRENT_TIMESTAMP), 
+  (83261, NULL, 'nm2293679', 'Michael Pollan', 'Michael', '', 'Pollan', 'M', 0, NULL, NULL, 'Long Island, New York, USA', '1955-2-6', NULL, CURRENT_TIMESTAMP), 
+  (NULL, NULL, NULL, 'Tracey Pollen', 'Tracey', '', 'Pollen', NULL, 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (524, '/rtLTG4yrEcROXhTBGXMrbyiUEC5.jpg', 'nm0000204', 'Natalie Portman', 'Natalie', '', 'Portman', 'F', 10137, 'https://www.natalieportman.com', NULL, 'Jerusalem, Israel', '1981-06-09', NULL, CURRENT_TIMESTAMP), 
+  (22104, NULL, 'nm0694441', 'Pamela Power', 'Pamela', '', 'Power', 'F', 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (21045, NULL, 'nm0702572', 'Maggie Q', 'Margaret', 'Denise', 'Quigley', 'F', 0, NULL, NULL, 'Honolulu, Hawaii, USA', '1979-05-22', NULL, CURRENT_TIMESTAMP), 
+  (176012, '/wdZh459cNiUcBwJVLF79WmVcWUx.jpg', 'nm0704472', 'Robin Quivers', 'Robin', '', 'Quivers', 'F', 0, NULL, NULL, NULL, '1952-08-08', NULL, CURRENT_TIMESTAMP), 
+  (85470, NULL, 'nm2144007', 'Kangana Ranaut', 'Kangana', '', 'Ranaut', 'F', 0, NULL, NULL, 'Bhambla, Himachal Pradesh, India', '1987-03-20', NULL, CURRENT_TIMESTAMP), 
+  (1304658, NULL, 'nm4229189', 'Romesh Ranganathan', 'Romesh', '', 'Ranganathan', 'M', 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (130959, NULL, 'nm1444479', 'Kiran Rao', 'Kiran', '', 'Rao', 'F', 0, NULL, NULL, '', '', NULL, CURRENT_TIMESTAMP), 
+  (NULL, NULL, 'nm0714703', 'Jacqueline Reddin', 'Jacqueline', '', 'Reddin', 'F', 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (21522, '/lH7mt4uAThyNlBzBgLHTPI8IGcf.jpg', 'nm0005344', 'Joe Regalbuto', 'Joe', '', 'Regalbuto', 'M', 0, NULL, NULL, NULL, '1949-08-24', NULL, CURRENT_TIMESTAMP), 
+  (1225714, '/saH5o19YRr2Dup7YRfof49dpNqg.jpg', 'nm0716441', 'Linda Regan', 'Linda', '', 'Regan', 'F', 91, NULL, NULL, 'London', '1949-11-05', NULL, CURRENT_TIMESTAMP), 
+  (1235097, NULL, 'nm0716726', 'Hubertus Regout', 'Hubertus', '', 'Regout', NULL, 1, NULL, NULL, NULL, '1969-07-26', NULL, CURRENT_TIMESTAMP), 
+  (NULL, NULL, 'nm2135553', 'Jessica Remmers', 'Jessica', '', 'Remmers', 'F', 1, 'http://jessicaremmers.com/', NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (1517012, NULL, 'nm6510553', 'Gabrielle Reyes', 'Gabrielle', '', 'Reyes', 'F', 1, NULL, NULL, 'Oceanside, California', NULL, NULL, CURRENT_TIMESTAMP), 
+  (1680955, NULL, 'nm3605860', 'Simone Reyes', 'Simone', '', 'Reyes', 'F', 1, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (1228245, NULL, 'nm0723793', 'Eric Richard', 'Eric', '', 'Richard', 'M', 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (1315036, NULL, 'nm5397459', 'Daisy Ridley', 'Daisy', '', 'Ridley', 'F', 1, NULL, NULL, 'London, England, UK', '1992-04-10', NULL, CURRENT_TIMESTAMP), 
+  (78080, NULL, 'nm1269983', 'Krysten Ritter', 'Krysten', '', 'Ritter', 'F', 0, NULL, NULL, 'Bloomsburg, Pennsylvania, USA', '1981-12-16', NULL, CURRENT_TIMESTAMP), 
+  (21315, '/45i6fsxBwH1UyA74tWQ6am0DntC.jpg', 'nm0000616', 'Eric Roberts', 'Eric', 'Anthony', 'Roberts', 'M', 3753, NULL, NULL, 'Biloxi, Mississippi, U.S.', '1956-04-18', NULL, CURRENT_TIMESTAMP), 
+  (NULL, NULL, 'nm0737974', 'Abigail Rokison', 'Abigail', '', 'Rokison', 'F', 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (NULL, NULL, 'nm5952731', 'Terry Hope Romero', 'Terry', 'Hope', 'Romero', 'F', 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (1246972, NULL, 'nm3199307', 'Ruby Rose', 'Ruby', '', 'Rose', 'F', 0, NULL, NULL, 'Melbourne, Australia', '1986-03-20', NULL, CURRENT_TIMESTAMP), 
+  (62010, '/sPf2YdfciJT2ov1i7xp0IqfMaKP.jpg', 'nm0005577', 'Portia de Rossi', 'Portia', 'Lee', 'Rossi', 'F', 1926, NULL, NULL, 'Geelong, Victoria, Australia', '1973-01-31', NULL, CURRENT_TIMESTAMP), 
+  (1226746, NULL, 'nm0747405', 'Carol Royle', 'Carol', '', 'Royle', NULL, 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (150, NULL, 'nm0747405', 'RZA', 'Robert', 'Fitzgerald', 'Diggs', NULL, 0, NULL, NULL, 'Brownsville, Brooklyn, New York City, New York, USA', '1969-07-05', NULL, CURRENT_TIMESTAMP), 
+  (119869, NULL, 'nm0758582', 'John Salley', 'John', '', 'Salley', NULL, 0, NULL, NULL, 'Brooklyn, New York, USA', '1964-05-16', NULL, CURRENT_TIMESTAMP), 
+  (17881, NULL, 'nm0005403', 'Jason Schwartzman', 'Jason', '', 'Schwartzman', NULL, 0, NULL, NULL, 'Los Angeles, California, USA', '1980-06-26', NULL, CURRENT_TIMESTAMP), 
+  (36551, '/9X0qbVR7q2zbWqLCqUpjJcwjBCI.jpg', 'nm2121084', 'Daniela Sea', 'Daniela', '', 'Sea', 'F', 0, 'http://www.danielasea.com/', NULL, 'Malibu, California, USA', '1977', NULL, CURRENT_TIMESTAMP), 
+  (36820, '/9hdSZS8XnJkGpn89BiNpwoxxbyo.jpg', 'nm0780485', 'Jenny Seagrove', 'Jenny', 'Ann', 'Seagrove', 'F', 696, NULL, NULL, 'Kuala Lumpur, Malaya', '1957-07-04', NULL, CURRENT_TIMESTAMP), 
+  (16377, NULL, 'nm0000632', 'Jerry Seinfeld', 'Jerry', '', 'Seinfeld', 'M', 0, NULL, NULL, 'Brooklyn, New York City, New York, USA', '1954-04-29', NULL, CURRENT_TIMESTAMP), 
+  (12446, NULL, 'nm0000634', 'Peter Sellers', 'Peter', '', 'Sellers', 'M', 0, NULL, NULL, 'Southsea, Hampshire, England, UK', '1925-09-08', '1980-07-24', CURRENT_TIMESTAMP), 
+  (1668665, NULL, 'nm0786824', 'Helena-Alexis Seymour', 'Helena-Alexis', '', 'Seymour', 'F', 0, NULL, NULL, 'Ottawa, Ontario, Canada', '1985-06-06', NULL, CURRENT_TIMESTAMP), 
+  (86030, NULL, 'nm3153204', 'Adah Sharma', 'Adah', '', 'Sharma', 'F', 0, NULL, NULL, 'Bombay, Maharashtra, India', '1992-05-11', NULL, CURRENT_TIMESTAMP), 
+  (1748, NULL, 'nm0000638', 'William Shatner', 'William', '', 'Shatner', 'M', 0, NULL, NULL, 'Montreal, Quebec, Canada', '1931-03-22', NULL, CURRENT_TIMESTAMP), 
+  (68985, '/6fvKWIj4L6c1TXfxpOzvpq1xDxS.jpg', 'nm0789864', 'Martin Shaw', 'Martin', '', 'Shaw', 'M', 1043, NULL, NULL, NULL, '1945-01-21', NULL, CURRENT_TIMESTAMP), 
+  (12851, NULL, 'nm0000639', 'Ally Sheedy', 'Ally', '', 'Sheedy', 'F', 0, NULL, NULL, 'New York City, New York, USA', '1962-06-13', NULL, CURRENT_TIMESTAMP), 
+  (1269484, NULL, 'nm2602276', 'Tallulah Sheffield', 'Tallulah', '', 'Sheffield', 'F', 0, NULL, NULL, 'London, England, UK', '1985-04-15', NULL, CURRENT_TIMESTAMP), 
+  (51298, '/50RfzslPEtaFdctKGU8GbWSheDZ.jpg', 'nm1009277', 'Dax Shepard', 'Dax', 'Randall', 'Shepard', 'M', 446, NULL, NULL, 'Milford, Michigan, USA', '1975-01-02', NULL, CURRENT_TIMESTAMP), 
+  (70689, NULL, 'nm1324246', 'Mallika Sherawat', 'Mallika', '', 'Sherawat', 'F', 0, NULL, NULL, 'Rohtak, Haryana, India', '1976-10-24', NULL, CURRENT_TIMESTAMP),  (15110, '/qxzEGmZCfEMsggT63MvjRdAiseU.jpg', 'nm0000222', 'Brooke Shields', 'Brooke', 'Christa', 'Shields', 'F', 2882, NULL, NULL, 'New York City - New York - USA', '1965-05-31', NULL, CURRENT_TIMESTAMP), 
+  (NULL, NULL, 'nm0794152', 'Cathy Shipton', 'Cathy', '', 'Shipton', 'F', 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (5588, '/o72bbDIVcCam6HK1sYDav7DoYUe.jpg', 'nm0000224', 'Alicia Silverstone', 'Alicia', '', 'Silverstone', 'F', 2349, NULL, NULL, 'San Francisco, California, USA', '1976-10-04', NULL, CURRENT_TIMESTAMP), 
+  (60474, NULL, 'nm0005432', 'Russell Simmons', 'Russell', '', 'Simmons', 'M', 0, NULL, NULL, 'Queens, New York, USA', '1957-10-04', NULL, CURRENT_TIMESTAMP), 
+  (97884, '/aXTPbcgvx7INee8DIqwuZztYVq7.jpg', 'nm0329947', 'John Gordon Sinclair', 'John', 'Gordon', 'Sinclair', 'M', 0, NULL, NULL, 'Glasgow, Scotland', NULL, NULL, CURRENT_TIMESTAMP), 
+  (1590797, NULL, 'nm5584750', 'Sadie Sink', 'Sadie', '', 'Sink', 'F', 0, NULL, NULL, 'Austin, Texas, USA', NULL, NULL, CURRENT_TIMESTAMP), 
+  (2393, '/ueHzqv6uN6Mhf1DC3IjTPhNafYq.jpg', 'nm0000642', 'Marina Sirtis', 'Marina', '', 'Sirtis', 'F', 2061, 'http://marinasirtis.tv', NULL, 'London - England - UK', '1955-03-29', NULL, CURRENT_TIMESTAMP), 
+  (1081097, NULL, 'nm2025217', 'Daniel Solwold', 'Daniel', '', 'Solwold', 'M', 0, NULL, NULL, 'Milwaukee, Wisconsin, USA', '1978-04-15', NULL, CURRENT_TIMESTAMP), 
+  (1219988, NULL, 'nm0818186', 'Rob Spendlove', 'Rob', '', 'Spendlove', 'M', 5, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (1037295, NULL, 'nm1442792', 'James Spooner', 'James', '', 'Spooner', 'M', 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (28641, '/fyGkLjgVfyKIPBaMQs5Df3gMuOV.jpg', 'nm0000654', 'Terence Stamp', 'Terence', 'Henry', 'Stamp', 'M', 2524, NULL, NULL, 'Stepney, London, England, UK', '1938-07-22', NULL, CURRENT_TIMESTAMP), 
+  (11356, '/mKlkh0AuYPD5HjmnlrW0uPm5QvJ.jpg', 'nm0001767', 'Imelda Staunton', 'Imelda', 'Mary', 'Staunton', 'F', 1053, NULL, NULL, 'London, United Kingdom', '1956-01-09', NULL, CURRENT_TIMESTAMP), 
+  (221018, NULL, 'nm1405398', 'Dan Stevens', 'Dan', '', 'Stevens', 'M', 0, NULL, NULL, 'Croydon, Surrey, England, UK', '1982-10-10', NULL, CURRENT_TIMESTAMP), 
+  (7399, '/umikKeCX3vEZoUcx2klxPG8571s.jpg', 'nm0001774', 'Ben Stiller', 'Ben', 'Edward', 'Stiller', 'M', 6683, NULL, NULL, 'New York City, New York, USA', '1965-11-30', NULL, CURRENT_TIMESTAMP), 
+  (7036, '/fXaULtqnMDKsqT1to8vnLjSXe0w.jpg', 'nm0000655', 'Eric Stoltz', 'Eric', 'Hamilton', 'Stoltz', 'M', 1500, NULL, NULL, 'Whittier - California - USA', '1961-09-30', NULL, CURRENT_TIMESTAMP), 
+  (1362550, NULL, 'nm3468641', 'Biz Stone', 'Biz', '', 'Stone', 'M', 0, NULL, NULL, 'Boston, Massachusetts, USA', '1974-03-10', NULL, CURRENT_TIMESTAMP), 
+  (113884, NULL, 'nm0832299', 'Lynda Stoner', 'Lynda', '', 'Stoner', 'F', 3, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (1261811, NULL, 'nm2884315', 'Elissa Sursara', 'Elissa', '', 'Sursara', 'F', 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (8211, NULL, 'nm0002546', 'Mena Suvari', 'Mena', '', 'Suvari', 'F', 0, NULL, NULL, 'Newport, Rhode Island, USA', '1979-02-13', NULL, CURRENT_TIMESTAMP), 
+  (112433, NULL, 'nm0841084', 'Anneka Svenska', 'Anneka', '', 'Svenska', 'F', 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (15286, '/99OssnGmgGjduXFA7syxjNqt9tQ.jpg', 'nm0852132', 'Christine Taylor', 'Christine', 'Joan', 'Taylor', 'F', 2210, NULL, NULL, 'Allentown, Pennsylvania, USA', '1971-07-30', NULL, CURRENT_TIMESTAMP), 
+  (145836, '/pxyoMB32Iw9tDi7RYpDnqhpAEoJ.jpg', 'nm1631435', 'Aimee Teegarden', 'Aimee', 'Richelle', 'Teegarden', 'F', 926, NULL, NULL, 'Downey, California, USA', '1989-10-10', NULL, CURRENT_TIMESTAMP), 
+  (11207, '/1YhN379UKCPt94nbLzncsDHTC9T.jpg', 'nm0000667', 'David Thewlis', 'David', '', 'Thewlis', 'M', 2131, NULL, NULL, 'Blackpool, Lancashire, England, UK', '1963-03-20', NULL, CURRENT_TIMESTAMP), 
+  (53283, '/1S8DpfNv6iiQRuKFPtb5u6sCQ5G.jpg', 'nm0001795', 'Jonathan Taylor Thomas', 'Jonathan', 'Taylor', 'Thomas', 'M', 2043, NULL, NULL, 'Bethlehem, Pennsylvania, U.S.', '1981-09-08', NULL, CURRENT_TIMESTAMP), 
+  (NULL, NULL, NULL, 'Niels Tijssen', 'Niels', '''polleke''', 'Tijssen', NULL, 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (47754, '/mXMfNP2gx26pww7D19zZdqaqi5g.jpg', 'nm0878240', 'Rita Tushingham', 'Rita', '', 'Tushingham', 'F', 38, NULL, NULL, 'Garston, Liverpool, Merseyside, England, UK', '1942-03-14', NULL, CURRENT_TIMESTAMP), 
+  (108558, NULL, 'nm0005510', 'Shania Twain', 'Shania', '', 'Twain', 'F', 0, NULL, NULL, 'Windsor, Ontario, Canada', '1965-08-28', NULL, CURRENT_TIMESTAMP), 
+  (80757, NULL, 'nm0005512', 'Mike Tyson', 'Mike', '', 'Tyson', 'M', 0, NULL, NULL, 'Brooklyn, New York City, New York, USA', '1966-06-30', NULL, CURRENT_TIMESTAMP), 
+  (96091, '/AiQ05Z1QNWV1b5ecarzfGcX10pv.jpg', 'nm1863227', 'Carrie Underwood', 'Carrie', 'Marie', 'Underwood', 'F', 0, NULL, NULL, 'Muskogee - Oklahoma - USA', '1983-03-10', NULL, CURRENT_TIMESTAMP), 
+  (57108, NULL, 'nm0713378', 'Usher Raymond', 'Usher', '', 'Raymond', 'M', 0, NULL, NULL, 'Dallas, Texas, USA', '1978-10-14', NULL, CURRENT_TIMESTAMP), 
+  (957, '/bW19nWbfIRQ8lNDkY3StXkF1qVg.jpg', 'nm0891216', 'Matthew Vaughn', 'Matthew', '', 'Vaughn', 'M', 2421, NULL, NULL, 'London, England, UK', '1971-03-07', NULL, CURRENT_TIMESTAMP), 
+  (231014, NULL, 'nm1100853', 'Jaci Velasquez', 'Jaci', '', 'Velasquez', 'F', 0, NULL, NULL, 'Houston, Texas, USA', '1979-10-15', NULL, CURRENT_TIMESTAMP), 
+  (118490, NULL, 'nm0896680', 'Meredith Vieira', 'Meredith', '', 'Vieira', 'F', 0, NULL, NULL, 'Providence, Rhode Island, USA', '1953-12-30', NULL, CURRENT_TIMESTAMP), 
+  (1215289, NULL, 'nm0898774', 'Tim Vincent', 'Tim', '', 'Vincent', NULL, 28, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (57905, '/n26onWq0lM5BusHY7KLRMOAnB1i.jpg', 'nm0905993', 'Lindsay Wagner', 'Lindsay', 'Jean', 'Wagner', 'F', 0, NULL, NULL, 'Los Angeles, California, U.S.', '1949-06-22', NULL, CURRENT_TIMESTAMP), 
+  (40207, '/z9EwnoNgmO9hwTHWtkuX3aBkwgv.jpg', 'nm0907636', 'Clint Walker', 'Clint', 'Eugene', 'Walker', 'M', 0, 'http://www.clintwalker.com/', NULL, 'Hartford, Illinois, United States', '1927-05-30', NULL, CURRENT_TIMESTAMP), 
+  (31921, '/fZUeign4RwFWa8DG4vqlM8m7cf6.jpg', 'nm0001830', 'Sophie Ward', 'Sophie', '', 'Ward', 'F', 0, NULL, NULL, 'London, England, United Kingdom', '1964-12-30', NULL, CURRENT_TIMESTAMP), 
+  (87201, NULL, 'nm1059922', 'Paul Watson', 'Paul', 'Franklin', 'Watson', 'M', 0, NULL, NULL, 'Toronto, Ontario, Canada', '1950-12-02', NULL, CURRENT_TIMESTAMP), 
+  (1123460, NULL, 'nm0915020', 'Tom Watt', 'Tom', '', 'Watt', 'M', 269, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (12422, '/vlAJC2oEE7PWOdp2hRi4K8v3zro.jpg', 'nm0915840', 'Dennis Weaver', 'Dennis', '', 'Weaver', 'M', 178, NULL, NULL, 'Joplin, Missouri, U.S.', '1924-06-04', '2006-02-24', CURRENT_TIMESTAMP), 
+  (103933, NULL, 'nm0920446', 'Tico Wells', 'Tico', '', 'Wells', 'M', 1, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (71727, '/pTM0ElkoBNNtbRjT13y4do9RKnq.jpg', 'nm0924508', 'Betty White', 'Betty', '', 'White', 'F', 965, NULL, NULL, 'Oak Park, Illinois, USA', '1922-01-17', NULL, CURRENT_TIMESTAMP), 
+  (138323, '/hA9CeUSftHpaWHkL0FAtqYDtLWt.jpg', 'nm0925316', 'Persia White', 'Persia', '', 'White', 'F', 0, NULL, NULL, 'Miami, Florida, U.S.', '1972-10-25', NULL, CURRENT_TIMESTAMP), 
+  (NULL, NULL, 'nm1211615', 'Ruth Whitehead', 'Ruth', '', 'Whitehead', NULL, 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (41091, NULL, 'nm1325419', 'Kristen Wiig', 'Kristen', '', 'Wiig', 'F', 0, NULL, NULL, 'Canandaigua, New York, USA', '1973-08-22', NULL, CURRENT_TIMESTAMP), 
+  (59315, '/3d69fgT1QOTDJxqy7FpBBAQxoM0.jpg', 'nm1312575', 'Olivia Wilde', 'Olivia', 'Jane', 'Wilde', 'F', 5276, NULL, NULL, 'New York City, New York, USA', '1984-03-10', NULL, CURRENT_TIMESTAMP), 
+  (1985, NULL, 'nm0931654', 'Saul Williams', 'Saul', 'Stacey', 'Williams', 'M', 0, NULL, NULL, 'Newburgh, New York, USA', '1972-02-29', NULL, CURRENT_TIMESTAMP), 
+  (543193, '/gZv46vwlyWK6Nx13uXmndg1Qkhu.jpg', 'nm0004539', 'Vanessa Williams', 'Vanessa', 'A.', 'Williams', 'F', 0, NULL, NULL, ' Brooklyn, New York', '1963-05-12', NULL, CURRENT_TIMESTAMP), 
+  (77740, NULL, 'nm0818454', 'Spice Williams-Crosby', 'Spice', '', 'Williams', 'F', 0, NULL, NULL, 'North Hollywood, Los Angeles, California, USA', '1952-04-26', NULL, CURRENT_TIMESTAMP), 
+  (190658, '/kq3VoRuNwn0F4SBzGUDBVtBNO2H.jpg', 'nm0942038', 'Emma Wray', 'Emma', '', 'Wray', 'F', 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (1212056, NULL, 'nm0943738', 'Gretchen Wyler', 'Gretchen', '', 'Wyler', 'F', 0, NULL, NULL, NULL, '1932-02-16', '2007-05-27', CURRENT_TIMESTAMP), 
+  (1742897, NULL, 'nm0943998', 'Steve Wynn', 'Steve', '', 'Wynn', 'M', 0, NULL, NULL, 'New Haven, Connecticut, USA', '1942-01-27', NULL, CURRENT_TIMESTAMP), 
+  (71041, '/jlJef4Sv3y1LIOfFFD7JaIQlGFJ.jpg', 'nm0946148', '"Weird Al" Yankovic', 'Al', 'Matthew', 'Yankovic', 'M', 0, NULL, NULL, 'Lynwood, California, USA', '1959-10-23', NULL, CURRENT_TIMESTAMP), 
+  (115611, NULL, 'nm0946888', 'Adam Yauch', 'Adam', 'Nathaniel', 'Yauch', 'M', 0, NULL, NULL, 'Brooklyn, New York City, New York, USA', '1964-08-05', '2012-05-04', CURRENT_TIMESTAMP), 
+  (31133, NULL, 'nm1666212', 'Ne-Yo', 'Ne', '', 'Yo', 'M', 0, NULL, NULL, 'Camden, Arkansas, USA', '1982-10-18', NULL, CURRENT_TIMESTAMP), 
+  (74336, NULL, 'nm0948810', 'Thom Yorke', 'Thom', '', 'Yorke', 'M', 0, NULL, NULL, 'Wellingborough, Northamptonshire, England, UK', '1968-10-07', NULL, CURRENT_TIMESTAMP), 
+  (87280, NULL, 'nm0949292', 'Bellamy Young', 'Bellamy', '', 'Young', 'F', 0, NULL, NULL, 'Asheville, North Carolina, USA', '1970-02-19', NULL, CURRENT_TIMESTAMP), 
+  (16848, NULL, 'nm0957772', 'Rob Zombie', 'Rob', '', 'Zombie', 'M', 0, NULL, NULL, 'Haverhill, Massachusetts, USA', '1965-01-12', NULL, CURRENT_TIMESTAMP), 
+  (21319, NULL, 'nm0600667', 'Sheri Moon Zombie', 'Sheri', 'Moon', 'Zombie', 'F', 0, NULL, NULL, 'San Jose, California, USA', '1970-09-26', NULL, CURRENT_TIMESTAMP)
+__SQL__;
+    $result = db_query($sql);
+
+    // Some known tags.
+    $sql = <<<__SQL__
+INSERT INTO {fdvegan_person_tag} (person_id, tag_id, created)
+  SELECT p.person_id, (SELECT tag_id FROM {fdvegan_tag} WHERE tag_name = 'vegan') tag_id, CURRENT_TIMESTAMP
+    FROM {fdvegan_person} AS p
+   WHERE p.full_name in ('Bryan Adams', 'Casey Affleck', 'Mikko Alanne', 'Eliana Alexander', 'Olivia Alexander', 'Suzy Amis', 'Simon Amstell', 'Meggan Anderson', 'Diana Angelson', 'Fiona Apple', 'Patrik Baboumian', 'Erykah Badu', 'Alec Baldwin', 'Eddie Bammeke', 'Travis Barker', 'Damon Albarn', 'Crystal Arnette', 'Richard Ashcroft', 'Andre 3000', 'Richard Bach', 'Tia Blanco', 'Peter Bogdanovich', 'Brendan Brazier', 'Asher Brown', 'Samantha Bulka', 'Hunter Burgan', 'Richa Chadha', 'Cesar Chavez', 'Robert Cheeke', 'Bill Clinton', 'Phil Collen', 'Matt Crotteau', 'Kalel Cullen', 'Alan Cumming', 'Luke Cummo', 'Miley Cyrus', 'Amy Jean Davis', 'Angela Davis', 'Carole Davis', 'Ellen DeGeneres', 'Nimai Delgado', 'Portia DeRossi', 'Jenna Dewan', 'Neha Dhupia', 'Martin Dingle-Wall', 'Peter Dinklage', 'Jermaine Dupri', 'Kimberly Elise', 'Nathalie Emmanuel', 'Craig Ferguson', 'Jacqueline Fernandez', 'Waka Flocka Flame', 'Gary Francione', 'Kathy Freston', 'Bruce Friedrich', 'Daisy Fuentes', 'Sia Furler', 'Josh Garcia', 'Sara Gilbert', 'Ellie Goulding', 'Ariana Grande', 'Alex Greenwald', 'Andrew Gunsberg', 'Moby', 'Lasse Hallstrom', 'Woody Harrelson', 'Mya Harrison', 'Davey Havok', 'Liam Hemsworth', 'Mark Hoppus', 'Chrissie Hynde', 'Famke Janssen', 'Sonam Kapoor', 'Tonya Kay', 'Emma Kenney', 'Aamir Khan', 'Chaka Khan', 'Jamie Kilstein', 'Coretta Scott King', 'Richie Kul', 'Emma Lahana', 'Debra Lamb', 'Jessica Lange', 'Carol Leifer', 'Jared Leto', 'Leona Lewis', 'Evanna Lynch', 'Bridget Malcolm', 'Johnny Marr', 'Kate Mara', 'Rooney Mara', 'Belen Matheu', 'Matisyahu', 'Sophia Miacova', 'Heather Mills', 'Morrissey', 'Tia Mowry-Hardrict', 'Jason Mraz', 'Marr Nealon', 'Daniel Negreanu', 'Petra Nemcova', 'Ingrid Newkirk', 'Hayley Marie Norman', 'Sinead O\'Connor', 'Bree Olson', 'Ellen Page', 'Joaquin Phoenix', 'River Phoenix', 'Michael Pollan', 'Natalie Portman', 'Maggie Q', 'Kangana Ranaut', 'Romesh Ranganathan', 'Kiran Rao', 'Usher Raymond', 'Jessica Remmers', 'Gabrielle Reyes', 'Simone Reyes', 'Krysten Ritter', 'Terry Hope Romero', 'Ruby Rose', 'RZA', 'John Salley', 'Jason Schwartzman', 'Helena-Alexis Seymour', 'Roxy Shahidi', 'Tallulah Sheffield', 'Mallika Sherawat', 'Russell Simmons', 'Sadie Sink', 'Daniel Solwold', 'James Spooner', 'Dan Stevens', 'Biz Stone', 'Mena Suvari', 'Anneka Svenska', 'Niels Tijssen', 'Shania Twain', 'Jaci Velasquez', 'Meredith Vieira', 'Lindsay Wagner', 'Sophie Ward', 'Paul Watson', 'Kristen Wiig', 'Saul Williams', 'Spice Williams', 'Steve Wynn', 'Adam Yauch', 'Ne-Yo', 'Thom Yorke', 'Bellamy Young', 'Rob Zombie', 'Sheri Moon Zombie')
+__SQL__;
+    $result = db_query($sql);
+    $sql = <<<__SQL__
+INSERT INTO {fdvegan_person_tag} (person_id, tag_id, created)
+  SELECT p.person_id, (SELECT tag_id FROM {fdvegan_tag} WHERE tag_name = 'vegetarian') tag_id, CURRENT_TIMESTAMP
+    FROM {fdvegan_person} AS p
+   WHERE p.full_name in ('Christina Applegate', 'Nadja Auermann', 'Barbara Bach', 'Amitabh Bachchan', 'Brigitte Bardot', 'Kristen Bell', 'Alia Bhatt', 'Christie Brinkley', 'Julie Christie', 'Matthew Coote', 'Danny DeVito', 'Leonardo DiCaprio', 'Vidyut Jamwal', 'Joan Jett', 'Shahid Kapoor', 'Irrfan Khan', 'Tea Leoni', 'Paul McCartney', 'Kal Penn', 'Prince', 'Peter Sellers', 'Adah Sharma', 'Ally Sheedy', 'Betty White')
+__SQL__;
+    $result = db_query($sql);
+    $sql = <<<__SQL__
+INSERT INTO {fdvegan_person_tag} (person_id, tag_id, created)
+  SELECT p.person_id, (SELECT tag_id FROM {fdvegan_tag} WHERE tag_name = 'veg-friendly') tag_id, CURRENT_TIMESTAMP
+    FROM {fdvegan_person} AS p
+   WHERE p.full_name in ('Darren Aronofsky', 'Maria Celeste Arraras', 'Ireland Baldwin', 'Camila Cabello', 'Kate del Castillo', 'Chelsea Clinton', 'Laverne Cox', 'Kaley Cuoco', 'Johnny Depp', 'Jason Derulo', 'Johnny Galecki', 'Ryan Gosling', 'Anne Hathaway', 'Samuel L. Jackson', 'Al Jefferson', 'Rashida Jones', 'Anthony Kiedis', 'Damian Lillard', 'Seth MacFarlane', 'Alicia Machado', 'Jenny McCarthy', 'Jahlil Okafor', 'Emily Osment', 'Karyn Parsons', 'Michael Pollan', 'Daisy Ridley', 'Jerry Seinfeld', 'William Shatner', 'Dax Shepard', 'Mike Tyson', 'Kate Winslet')
+__SQL__;
+    $result = db_query($sql);
+    $sql = <<<__SQL__
+INSERT INTO {fdvegan_person_tag} (person_id, tag_id, created)
+  SELECT p.person_id, (SELECT tag_id FROM {fdvegan_tag} WHERE tag_name = 'director') tag_id, CURRENT_TIMESTAMP
+    FROM {fdvegan_person} AS p
+   WHERE p.full_name in ('Simon Amstell', 'Crystal Arnette', 'Darren Aronofsky', 'Eddie Bammeke', 'Peter Bogdanovich', 'James Cameron', 'Robert Cheeke', 'Matt Crotteau', 'Bruce Friedrich', 'Lasse Hallstrom', 'Kiran Rao', 'James Spooner', 'Biz Stone', 'Rob Zombie')
+__SQL__;
+    $result = db_query($sql);
+    $sql = <<<__SQL__
+INSERT INTO {fdvegan_person_tag} (person_id, tag_id, created)
+  SELECT p.person_id, (SELECT tag_id FROM {fdvegan_tag} WHERE tag_name = 'writer') tag_id, CURRENT_TIMESTAMP
+    FROM {fdvegan_person} AS p
+   WHERE p.full_name in ('Mikko Alanne', 'Richard Bach', 'Carole Davis', 'Kathy Freston', 'Coretta Scott King', 'Carol Leifer', 'Michael Pollan', 'Romesh Ranganathan', 'Terry Hope Romero', 'Russell Simmons', 'Saul Williams')
+__SQL__;
+    $result = db_query($sql);
+    $sql = <<<__SQL__
+INSERT INTO {fdvegan_person_tag} (person_id, tag_id, created)
+  SELECT p.person_id, (SELECT tag_id FROM {fdvegan_tag} WHERE tag_name = 'activist') tag_id, CURRENT_TIMESTAMP
+    FROM {fdvegan_person} AS p
+   WHERE p.full_name in ('Suzy Amis', 'Meggan Anderson', 'Diana Angelson', 'Brigitte Bardot', 'Asher Brown', 'Kate del Castillo', 'Alan Cumming', 'Amy Jean Davis', 'Carole Davis', 'Leonardo DiCaprio', 'Kathy Freston', 'Woody Harrelson', 'Coretta Scott King', 'Richie Kul', 'Evanna Lynch', 'Heather Mills', 'Moby', 'Joaquin Phoenix', 'Michael Pollan', 'Simone Reyes', 'Krysten Ritter', 'Mena Suvari')
+__SQL__;
+    $result = db_query($sql);
+    $sql = <<<__SQL__
+INSERT INTO {fdvegan_person_tag} (person_id, tag_id, created)
+  SELECT p.person_id, (SELECT tag_id FROM {fdvegan_tag} WHERE tag_name = 'musician') tag_id, CURRENT_TIMESTAMP
+    FROM {fdvegan_person} AS p
+   WHERE p.full_name in ('Bryan Adams', 'Damon Albarn', 'Hunter Burgan', 'Phil Collen', 'Jason Derulo', 'Mark Hoppus', 'Johnny Marr', 'Paul McCartney', 'Prince', 'Krysten Ritter', 'Saul Williams', 'Adam Yauch', 'Thom Yorke', 'Rob Zombie')
+__SQL__;
+    $result = db_query($sql);
+    $sql = <<<__SQL__
+INSERT INTO {fdvegan_person_tag} (person_id, tag_id, created)
+  SELECT p.person_id, (SELECT tag_id FROM {fdvegan_tag} WHERE tag_name = 'singer') tag_id, CURRENT_TIMESTAMP
+    FROM {fdvegan_person} AS p
+   WHERE p.full_name in ('Bryan Adams', 'Damon Albarn', 'Fiona Apple', 'Crystal Arnette', 'Richard Ashcroft', 'Brigitte Bardot', 'Alia Bhatt', 'Samantha Bulka', 'Camila Cabello', 'Miley Cyrus', 'Carole Davis', 'Jermaine Dupri', 'Waka Flocka Flame', 'Ariana Grande', 'Alex Greenwald', 'Davey Havok', 'Mark Hoppus', 'Chrissie Hynde', 'Joan Jett', 'Chaka Khan', 'Anthony Kiedis', 'Sinead O\'Connor', 'Alicia Machado', 'Johnny Marr', 'Matisyahu', 'Paul McCartney', 'Jason Mraz', 'Emily Osment', 'Prince', 'Usher Raymond', 'Shania Twain', 'Saul Williams', 'Adam Yauch', 'Ne-Yo')
+__SQL__;
+    $result = db_query($sql);
+    $sql = <<<__SQL__
+INSERT INTO {fdvegan_person_tag} (person_id, tag_id, created)
+  SELECT p.person_id, (SELECT tag_id FROM {fdvegan_tag} WHERE tag_name = 'comedian') tag_id, CURRENT_TIMESTAMP
+    FROM {fdvegan_person} AS p
+   WHERE p.full_name in ('Simon Amstell', 'Myq Kaplan', 'Kal Penn', 'Jerry Seinfeld')
+__SQL__;
+    $result = db_query($sql);
+    $sql = <<<__SQL__
+INSERT INTO {fdvegan_person_tag} (person_id, tag_id, created)
+  SELECT p.person_id, (SELECT tag_id FROM {fdvegan_tag} WHERE tag_name = 'athlete') tag_id, CURRENT_TIMESTAMP
+    FROM {fdvegan_person} AS p
+   WHERE p.full_name in ('Patrik Baboumian', 'Tia Blanco', 'Brendan Brazier', 'Luke Cummo', 'Nimai Delgado', 'Al Jefferson', 'Tonya Kay', 'Carl Lewis', 'Damian Lillard', 'Jahlil Okafor', 'John Salley', 'Daniel Solwold', 'Mike Tyson')
+__SQL__;
+    $result = db_query($sql);
+    $sql = <<<__SQL__
+INSERT INTO {fdvegan_person_tag} (person_id, tag_id, created)
+  SELECT p.person_id, (SELECT tag_id FROM {fdvegan_tag} WHERE tag_name = 'model') tag_id, CURRENT_TIMESTAMP
+    FROM {fdvegan_person} AS p
+   WHERE p.full_name in ('Meggan Anderson', 'Christina Applegate', 'Nadja Auermann', 'Barbara Bach', 'Ireland Baldwin', 'Brigitte Bardot', 'Christie Brinkley', 'Samantha Bulka', 'Richa Chadha', 'Kate del Castillo', 'Amy Jean Davis', 'Neha Dhupia', 'Jacqueline Fernandez', 'Daisy Fuentes', 'Richie Kul', 'Debra Lamb', 'Alicia Machado', 'Bridget Malcolm', 'Belen Matheu', 'Jenny McCarthy', 'Kate Moss', 'Tia Mowry-Hardrict', 'Petra Nemcova', 'Bree Olson', 'Kangana Ranaut', 'Krysten Ritter', 'Helena-Alexis Seymour', 'Mallika Sherawat')
+__SQL__;
+    $result = db_query($sql);
+    $sql = <<<__SQL__
+INSERT INTO {fdvegan_person_tag} (person_id, tag_id, created)
+  SELECT p.person_id, (SELECT tag_id FROM {fdvegan_tag} WHERE tag_name = 'political') tag_id, CURRENT_TIMESTAMP
+    FROM {fdvegan_person} AS p
+   WHERE p.full_name in ('Cesar Chavez', 'Bill Clinton', 'Chelsea Clinton')
+__SQL__;
+    $result = db_query($sql);
+    $sql = <<<__SQL__
+INSERT INTO {fdvegan_person_tag} (person_id, tag_id, created)
+  SELECT p.person_id, (SELECT tag_id FROM {fdvegan_tag} WHERE tag_name = 'adult-rated') tag_id, CURRENT_TIMESTAMP
+    FROM {fdvegan_person} AS p
+   WHERE p.full_name IN ('Meggan Anderson', 'Jenny McCarthy', 'Bree Olson')
+__SQL__;
+    $result = db_query($sql);
+    $sql = <<<__SQL__
+INSERT INTO {fdvegan_person_tag} (person_id, tag_id, created)
+  SELECT p.person_id, (SELECT tag_id FROM {fdvegan_tag} WHERE tag_name = 'actor-tv') tag_id, CURRENT_TIMESTAMP
+    FROM {fdvegan_person} AS p
+   WHERE p.full_name IN ('Carole Davis', 'Daisy Fuentes', 'Josh Garcia', 'Hayley Marie Norman', 'Karyn Parsons', 'Krysten Ritter')
+__SQL__;
+    $result = db_query($sql);
+
+    // Catch-all default tags for the remaining film actors.
+    // Note - not all of these actors are strictly vegan, some are likely only vegetarian or veg-friendly,
+    //        but unless they're listed immediately above, this is the default tag.
+    $sql = <<<__SQL__
+INSERT INTO {fdvegan_person_tag} (person_id, tag_id, created)
+  SELECT p.person_id, (SELECT tag_id FROM {fdvegan_tag} WHERE tag_name = 'vegan') tag_id, CURRENT_TIMESTAMP
+    FROM {fdvegan_person} AS p
+   WHERE p.person_id NOT IN ( SELECT person_id FROM {fdvegan_person_tag} WHERE tag_id in (SELECT tag_id FROM {fdvegan_tag} WHERE tag_name in ('vegan', 'vegetarian', 'veg-friendly')) )
+__SQL__;
+    $result = db_query($sql);
+    $sql = <<<__SQL__
+INSERT INTO {fdvegan_person_tag} (person_id, tag_id, created)
+  SELECT p.person_id, (SELECT tag_id FROM {fdvegan_tag} WHERE tag_name = 'actor') tag_id, CURRENT_TIMESTAMP
+    FROM {fdvegan_person} AS p
+   WHERE p.person_id NOT IN ( SELECT person_id FROM {fdvegan_person_tag} WHERE tag_id = (SELECT tag_id FROM {fdvegan_tag} WHERE tag_name = 'actor') )
+     AND p.full_name NOT IN ('Asher Brown', 'Belen Matheu', 'Kiran Rao')
+__SQL__;
+    $result = db_query($sql);
+
+    // Insert TV personalities.
+    $sql = <<<__SQL__
+INSERT INTO {fdvegan_person} (`tmdbid`, `tmdb_image_path`, `imdb_id`, `full_name`, `first_name`, `middle_name`, `last_name`, `gender`, `rating`, `homepage_url`, `biography`, `birthplace`, `birthday`, `deathday`, `created`) VALUES 
+  (1792008, NULL, 'nm3457251', 'Pamela Armstrong', 'Pamela', '', 'Armstrong', 'F', 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (71082, '/tzX7CXHl4rsX4nW7wA49lDhv2s6.jpg', 'nm0036349', 'Andrea Arnold', 'Andrea', '', 'Arnold', 'F', 0, NULL, NULL, 'Dartford, Kent, England', '1961-04-05', NULL, CURRENT_TIMESTAMP), 
+  (170802, '/4ex3lzv9LEibpLibFkqSdWiRBMz.jpg', 'nm0054837', 'Bob Barker', 'Bob', '', 'Barker', 'M', 0, NULL, NULL, NULL, '1923-12-12', NULL, CURRENT_TIMESTAMP), 
+  (NULL, NULL, 'nm2533671', 'Marian Chanter', 'Marian', '', 'Chanter', NULL, 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (9188, '/7e1rVdJah2r0DaMpovrhbR2dHPS.jpg', 'nm0175262', 'Billy Connolly', 'Billy', '', 'Connolly', 'M', 2819, 'http://www.billyconnolly.com/', NULL, 'Anderston, Glasgow, Scotland, UK', '1942-11-24', NULL, CURRENT_TIMESTAMP), 
+  (NULL, NULL, 'nm0992415', 'Phil Cool', 'Phil', '', 'Cool', NULL, 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (1540283, NULL, 'nm4213217', 'Barbara Edwards', 'Barbara', '', 'Edwards', 'F', 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (NULL, NULL, 'nm0286741', 'Philippa Forester', 'Philippa', '', 'Forester', NULL, 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (NULL, NULL, 'nm1490297', 'Antoinette Hertsenberg', 'Antoinette', '', 'Hertsenberg', NULL, 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (NULL, NULL, 'nm0800043', 'Simon Hickson', 'Simon', '', 'Hickson', NULL, 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (109932, '/iYpsv04PZBFsQ3H5dbuYcpTofJG.jpg', 'nm0400923', 'Sean Hughes', 'Sean', '', 'Hughes', 'M', 0, NULL, NULL, 'London, UK', '1965-11-10', NULL, CURRENT_TIMESTAMP), 
+  (27291, NULL, 'nm0428094', 'Gareth Jones', 'Gareth', '', 'Jones', NULL, 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (1869539, NULL, 'nm1597125', 'Penny Junor', 'Penny', '', 'Junor', NULL, 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (NULL, NULL, NULL, 'Diane Kemp', 'Diane', '', 'Kemp', NULL, 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (NULL, NULL, 'nm1816068', 'Joe Longthorne', 'Joe', '', 'Longthorne', NULL, 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (92921, '/kQ2i85FXCsaZfLgbNVIFSA3HslF.jpg', 'nm0572534', 'Don McLean', 'Don', '', 'McLean', 'M', 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (1074129, '/snxYO0GCETZFoto0t4EK37K35ok.jpg', 'nm0736872', 'Fred Rogers', 'Fred', '', 'Rogers', 'M', 5, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (73112, NULL, 'nm0801055', 'John Simpson', 'John', '', 'Simpson', 'M', 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (NULL, NULL, 'nm5437208', 'Lisa Simpson', 'Lisa', '', 'Simpson', 'F', 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (71482, NULL, 'nm0005533', 'Maitland Ward', 'Maitland', '', 'Ward', 'F', 0, NULL, NULL, 'Long Beach, California, U.S.', '1977-02-03', NULL, CURRENT_TIMESTAMP), 
+  (1262411, NULL, 'nm1119993', 'Vanessa Warwick', 'Vanessa', '', 'Warwick', 'F', 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (29651, NULL, 'nm0931851', 'Trevor Williams', 'Trevor', '', 'Williams', 'M', 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (138175, '/57zU1SUHjv4gdIoq8Z8IjP4SZYo.jpg', 'nm0940064', 'Victoria Wood', 'Victoria', '', 'Wood', 'F', 0, NULL, NULL, 'Prestwich, Greater Manchester, Lancashire, England, UK', '1953-05-19', '2016-04-20', CURRENT_TIMESTAMP), 
+  (1236947, NULL, 'nm0941228', 'William Woollard', 'William', '', 'Woollard', 'M', 0, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP)
+__SQL__;
+    $result = db_query($sql);
+
+    // Some tags for the TV-actors.
+    // @TODO - Not all of the above TV-actors are strictly vegan, some are only vegetarian.
+    $sql = <<<__SQL__
+INSERT INTO {fdvegan_person_tag} (person_id, tag_id, created)
+  SELECT p.person_id, (SELECT tag_id FROM {fdvegan_tag} WHERE tag_name = 'vegan') tag_id, CURRENT_TIMESTAMP
+    FROM {fdvegan_person} AS p
+   WHERE p.person_id NOT IN ( SELECT person_id FROM {fdvegan_person_tag} WHERE tag_id in (SELECT tag_id FROM {fdvegan_tag} WHERE tag_name in ('vegan', 'vegetarian', 'veg-friendly')) )
+__SQL__;
+    $result = db_query($sql);
+    $sql = <<<__SQL__
+INSERT INTO {fdvegan_person_tag} (person_id, tag_id, created)
+  SELECT p.person_id, (SELECT tag_id FROM {fdvegan_tag} WHERE tag_name = 'actor-tv') tag_id, CURRENT_TIMESTAMP
+    FROM {fdvegan_person} AS p
+   WHERE p.person_id NOT IN ( SELECT person_id FROM {fdvegan_person_tag} WHERE tag_id = (SELECT tag_id FROM {fdvegan_tag} WHERE tag_name = 'actor') )
+     AND p.full_name NOT IN ('Asher Brown')
+__SQL__;
+    $result = db_query($sql);
+
+    // Insert quotes.
+    $sql = <<<__SQL__
+INSERT INTO {fdvegan_quote} (person_id, tag_id, rating, quote, source, created)
+  SELECT p.person_id, (SELECT tag_id FROM {fdvegan_tag} WHERE tag_name = 'vegetarian') tag_id, 0,
+         'Every time sitting at a dining table, we make a choice. Please choose vegetarianism. Do it for the animals. Do it for the environment and for the sake of your own health.',
+         NULL, CURRENT_TIMESTAMP
+    FROM {fdvegan_person} AS p
+   WHERE p.full_name = 'Alec Baldwin'
+__SQL__;
+    $result = db_query($sql);
+    $sql = <<<__SQL__
+INSERT INTO {fdvegan_quote} (person_id, tag_id, rating, quote, source, created)
+  SELECT p.person_id, (SELECT tag_id FROM {fdvegan_tag} WHERE tag_name = 'vegan') tag_id, 0,
+         'To deny an animal its right to self-determination, its right to live out its life as it chooses in its natural habitat, that is an aggression; it\'s an aggression against the planet and all other sentient beings.',
+         NULL, CURRENT_TIMESTAMP
+    FROM {fdvegan_person} AS p
+   WHERE p.full_name = 'James Cromwell'
+__SQL__;
+    $result = db_query($sql);
+    $sql = <<<__SQL__
+INSERT INTO {fdvegan_quote} (person_id, tag_id, rating, quote, source, created)
+  SELECT p.person_id, (SELECT tag_id FROM {fdvegan_tag} WHERE tag_name = 'vegan') tag_id, 0,
+         'If you don\'t like seeing pictures of violence towards animals being posted, you need to help stop the violence, not the pictures.',
+         NULL, CURRENT_TIMESTAMP
+    FROM {fdvegan_person} AS p
+   WHERE p.full_name = 'Johnny Depp'
+__SQL__;
+    $result = db_query($sql);
+    $sql = <<<__SQL__
+INSERT INTO {fdvegan_quote} (person_id, tag_id, rating, quote, source, created)
+  SELECT p.person_id, (SELECT tag_id FROM {fdvegan_tag} WHERE tag_name = 'vegan') tag_id, 0,
+         'I\'m a vegan. I respect the environment and I do my best to spread the importance of such an issue.',
+         NULL, CURRENT_TIMESTAMP
+    FROM {fdvegan_person} AS p
+   WHERE p.full_name = 'Jared Leto'
+__SQL__;
+    $result = db_query($sql);
+    $sql = <<<__SQL__
+INSERT INTO {fdvegan_quote} (person_id, tag_id, rating, quote, source, created)
+  SELECT p.person_id, (SELECT tag_id FROM {fdvegan_tag} WHERE tag_name = 'vegan') tag_id, 0,
+         'People get offended by animal rights campaigns. It\'s ludicrous. It\'s not as bad as mass animal death in a factory.',
+         NULL, CURRENT_TIMESTAMP
+    FROM {fdvegan_person} AS p
+   WHERE p.full_name = 'Richard Gere'
+__SQL__;
+    $result = db_query($sql);
+    $sql = <<<__SQL__
+INSERT INTO {fdvegan_quote} (person_id, tag_id, rating, quote, source, created)
+  SELECT p.person_id, (SELECT tag_id FROM {fdvegan_tag} WHERE tag_name = 'vegan') tag_id, 0,
+         'I like animals, all animals. I wouldn\'t hurt a cat or a dog or a chicken or a cow. And I wouldn\'t ask someone else to hurt them for me. That\'s why I\'m a vegan.',
+         NULL, CURRENT_TIMESTAMP
+    FROM {fdvegan_person} AS p
+   WHERE p.full_name = 'Peter Dinklage'
+__SQL__;
+    $result = db_query($sql);
+    $sql = <<<__SQL__
+INSERT INTO {fdvegan_quote} (person_id, tag_id, rating, quote, source, created)
+  SELECT p.person_id, (SELECT tag_id FROM {fdvegan_tag} WHERE tag_name = 'vegan') tag_id, 0,
+         'Deregulation created this epidemic of greed which according to the rules of capitalism was OK. Beyond that there was criminal behaviour. There have been no repercussions and it\'s hard to make your peace with.',
+         NULL, CURRENT_TIMESTAMP
+    FROM {fdvegan_person} AS p
+   WHERE p.full_name = 'Brad Pitt'
+__SQL__;
+    $result = db_query($sql);
+    $sql = <<<__SQL__
+INSERT INTO {fdvegan_quote} (person_id, tag_id, rating, quote, source, created)
+  SELECT p.person_id, (SELECT tag_id FROM {fdvegan_tag} WHERE tag_name = 'vegan') tag_id, 0,
+         'I gave up meat when I was twelve.  One day I was cutting up a chicken for my mom, and I hit a tumor with the knife. There was [pus] and blood all over the place. That was enough for me.',
+         NULL, CURRENT_TIMESTAMP
+    FROM {fdvegan_person} AS p
+   WHERE p.full_name = 'Josh Hartnett'
+__SQL__;
+    $result = db_query($sql);
+    $sql = <<<__SQL__
+INSERT INTO {fdvegan_quote} (person_id, tag_id, rating, quote, source, created)
+  SELECT p.person_id, (SELECT tag_id FROM {fdvegan_tag} WHERE tag_name = 'vegan') tag_id, 0,
+         'I became vegetarian because I have a pact with my kids. I said \"I want to be there for your 50th birthday; which means I have to be 100.\"',
+         NULL, CURRENT_TIMESTAMP
+    FROM {fdvegan_person} AS p
+   WHERE p.full_name = 'Dustin Hoffman'
+__SQL__;
+    $result = db_query($sql);
+    $sql = <<<__SQL__
+INSERT INTO {fdvegan_quote} (person_id, tag_id, rating, quote, source, created)
+  SELECT p.person_id, (SELECT tag_id FROM {fdvegan_tag} WHERE tag_name = 'vegan') tag_id, 0,
+         'I\'ve been a vegan since I was about 3 years old and involved in animal rights for years.',
+         NULL, CURRENT_TIMESTAMP
+    FROM {fdvegan_person} AS p
+   WHERE p.full_name = 'Joaquin Phoenix'
+__SQL__;
+    $result = db_query($sql);
+    $sql = <<<__SQL__
+INSERT INTO {fdvegan_quote} (person_id, tag_id, rating, quote, source, created)
+  SELECT p.person_id, (SELECT tag_id FROM {fdvegan_tag} WHERE tag_name = 'vegan') tag_id, 0,
+         'It\'s never really been that hard for me. I\'ve never had any desire to eat meat. In fact, when I was a kid I would have a really difficult time eating meat at all.',
+         NULL, CURRENT_TIMESTAMP
+    FROM {fdvegan_person} AS p
+   WHERE p.full_name = 'Tobey Maguire'
+__SQL__;
+    $result = db_query($sql);
+    $sql = <<<__SQL__
+INSERT INTO {fdvegan_quote} (person_id, tag_id, rating, quote, source, created)
+  SELECT p.person_id, (SELECT tag_id FROM {fdvegan_tag} WHERE tag_name = 'vegan') tag_id, 0,
+         'I take vitamins daily, but just the bare essentials not what you\'d call supplements. I try to stick to a vegan diet heavy on fruit, vegetables, tofu, and other soy products.',
+         NULL, CURRENT_TIMESTAMP
+    FROM {fdvegan_person} AS p
+   WHERE p.full_name = 'Clint Eastwood'
+__SQL__;
+    $result = db_query($sql);
+    $sql = <<<__SQL__
+INSERT INTO {fdvegan_quote} (person_id, tag_id, rating, quote, source, created)
+  SELECT p.person_id, (SELECT tag_id FROM {fdvegan_tag} WHERE tag_name = 'vegan') tag_id, 0,
+         'If you knew how meat was raised, you wouldn’t eat it.',
+         NULL, CURRENT_TIMESTAMP
+    FROM {fdvegan_person} AS p
+   WHERE p.full_name = 'Justin Timberlake'
+__SQL__;
+    $result = db_query($sql);
+    $sql = <<<__SQL__
+INSERT INTO {fdvegan_quote} (person_id, tag_id, rating, quote, source, created)
+  SELECT p.person_id, (SELECT tag_id FROM {fdvegan_tag} WHERE tag_name = 'vegetarian') tag_id, 0,
+         'I ask people why they have deer heads on their walls and they always say that it\'s because it\'s such a beautiful animal. You know, I think that my mother is beautiful, but I choose to have photographs of her on my wall.',
+         NULL, CURRENT_TIMESTAMP
+    FROM {fdvegan_person} AS p
+   WHERE p.full_name = 'Ellen DeGeneres'
+__SQL__;
+    $result = db_query($sql);
+    $sql = <<<__SQL__
+INSERT INTO {fdvegan_quote} (person_id, tag_id, rating, quote, source, created)
+  SELECT p.person_id, (SELECT tag_id FROM {fdvegan_tag} WHERE tag_name = 'vegetarian') tag_id, 0,
+         'If slaughterhouses had glass walls, everyone would be vegetarian.',
+         NULL, CURRENT_TIMESTAMP
+    FROM {fdvegan_person} AS p
+   WHERE p.full_name = 'Paul McCartney'
+__SQL__;
+    $result = db_query($sql);
+    $sql = <<<__SQL__
+INSERT INTO {fdvegan_quote} (person_id, tag_id, rating, quote, source, created)
+  SELECT p.person_id, (SELECT tag_id FROM {fdvegan_tag} WHERE tag_name = 'vegan') tag_id, 0,
+         'Behind every beautiful fur coat, there is a story. It is a bloody, barbaric story.',
+         NULL, CURRENT_TIMESTAMP
+    FROM {fdvegan_person} AS p
+   WHERE p.full_name = 'Mary Tyler Moore'
+__SQL__;
+    $result = db_query($sql);
+    $sql = <<<__SQL__
+INSERT INTO {fdvegan_quote} (person_id, tag_id, rating, quote, source, created)
+  SELECT p.person_id, (SELECT tag_id FROM {fdvegan_tag} WHERE tag_name = 'vegan') tag_id, 0,
+         'I gave my beauty and my youth to men. I am going to give my wisdom and experience to animals.',
+         NULL, CURRENT_TIMESTAMP
+    FROM {fdvegan_person} AS p
+   WHERE p.full_name = 'Brigitte Bardot'
+__SQL__;
+    $result = db_query($sql);
+    $sql = <<<__SQL__
+INSERT INTO {fdvegan_quote} (person_id, tag_id, rating, quote, source, created)
+  SELECT p.person_id, (SELECT tag_id FROM {fdvegan_tag} WHERE tag_name = 'vegan') tag_id, 0,
+         'Fur used to turn heads, now it turns stomachs.',
+         NULL, CURRENT_TIMESTAMP
+    FROM {fdvegan_person} AS p
+   WHERE p.full_name = 'Rue McClanahan'
+__SQL__;
+    $result = db_query($sql);
+    $sql = <<<__SQL__
+INSERT INTO {fdvegan_quote} (person_id, tag_id, rating, quote, source, created)
+  SELECT p.person_id, (SELECT tag_id FROM {fdvegan_tag} WHERE tag_name = 'vegan') tag_id, 0,
+         'We must educate the public. The average person has no idea of what\'s going on in factory farms, in animal testing laboratories, at circuses, at zoos or at rodeos.',
+         NULL, CURRENT_TIMESTAMP
+    FROM {fdvegan_person} AS p
+   WHERE p.full_name = 'Bob Barker'
+__SQL__;
+    $result = db_query($sql);
+    $sql = <<<__SQL__
+INSERT INTO {fdvegan_quote} (person_id, tag_id, rating, quote, source, created)
+  SELECT p.person_id, (SELECT tag_id FROM {fdvegan_tag} WHERE tag_name = 'vegan') tag_id, 0,
+         'If you could see or feel the suffering you wouldn\'t think twice. Give back life. Don\'t eat meat.',
+         NULL, CURRENT_TIMESTAMP
+    FROM {fdvegan_person} AS p
+   WHERE p.full_name = 'Kim Basinger'
+__SQL__;
+    $result = db_query($sql);
+
+
+    // Must insert the records for default blank images.
+    $sql = <<<__SQL__
+INSERT INTO {fdvegan_media} (movie_id, person_id, media_type, media_size, order_num, local_filename, external_url, source, rating, media_date, descr, height, width, created, synced) VALUES 
+  (0, 0, 'person', 's', 1, 'person-s-0-1.jpg', 'https://fivedegreevegan.aprojects.org/sites/default/files/tmdb/person/s/person-s-0-1.jpg', 'Manually copied from FDVegan module', 1, '2016-09-25', 'Default blank actor image', 67, 45, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP), 
+  (0, 0, 'person', 'm', 1, 'person-m-0-1.jpg', 'https://fivedegreevegan.aprojects.org/sites/default/files/tmdb/person/m/person-m-0-1.jpg', 'Manually copied from FDVegan module', 1, '2016-09-25', 'Default blank actor image', 275, 185, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP), 
+  (0, 0, 'person', 'l', 1, 'person-l-0-1.jpg', 'https://fivedegreevegan.aprojects.org/sites/default/files/tmdb/person/l/person-l-0-1.jpg', 'Manually copied from FDVegan module', 1, '2016-09-25', 'Default blank actor image', 632, 421, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP), 
+  (0, 0, 'movie', 's', 1, 'movie-s-0-1.jpg', 'https://fivedegreevegan.aprojects.org/sites/default/files/tmdb/movie/s/movie-s-0-1.jpg', 'Manually copied from FDVegan module', 1, '2016-09-25', 'Default blank movie image', 137, 92, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP), 
+  (0, 0, 'movie', 'm', 1, 'movie-m-0-1.jpg', 'https://fivedegreevegan.aprojects.org/sites/default/files/tmdb/movie/m/movie-m-0-1.jpg', 'Manually copied from FDVegan module', 1, '2016-09-25', 'Default blank movie image', 275, 185, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP), 
+  (0, 0, 'movie', 'l', 1, 'movie-l-0-1.jpg', 'https://fivedegreevegan.aprojects.org/sites/default/files/tmdb/movie/l/movie-l-0-1.jpg', 'Manually copied from FDVegan module', 1, '2016-09-25', 'Default blank movie image', 750, 500, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+__SQL__;
+    $result = db_query($sql);
+
+
+    // Initialize the known process_status entries.
+    $sql = <<<__SQL__
+INSERT INTO {fdvegan_process_status} 
+  (process_name, status, verbose_status, created) VALUES 
+  ('CALC_DEGREES', 'READY', 'Ready to initialize; has not been run yet.', CURRENT_TIMESTAMP)
+__SQL__;
+    $result = db_query($sql);
+
+
+    // Some known movies.
+    $sql = <<<__SQL__
+INSERT INTO {fdvegan_movie} (tmdbid, imdb_id, title, release_date, created) VALUES 
+  (75, 'tt0116996', 'Mars Attacks!', '1996-12-12', CURRENT_TIMESTAMP)
+__SQL__;
+//    $result = db_query($sql);
+
+    // Some known movie cast lists.
+    $sql = <<<__SQL__
+INSERT INTO {fdvegan_cast_list} (movie_id, person_id, tmdb_order, `character`, created) VALUES 
+  (1, (SELECT person_id FROM {fdvegan_person} WHERE full_name = 'Natalie Portman'), 10, 'Taffy Dale', CURRENT_TIMESTAMP),
+  (1, (SELECT person_id FROM {fdvegan_person} WHERE full_name = 'Danny DeVito'), 4, 'Rude Gambler', CURRENT_TIMESTAMP)
+__SQL__;
+//    $result = db_query($sql);
+
+
+    $init_load_link = l(t('visit the initial load process page'),
+                        'init-load'
+                       );
+    $message = "fdvegan module installed.<br>You <strong>must</strong> now {$init_load_link} as an Admin to load the database.";
+    drupal_set_message(t($message), 'warning');
+}
+
+
+/**
+ * Implement hook_uninstall().
+ *
+ * Perform actions to tear down the site for the fdvegan module.
+ * Documented at:  https://api.drupal.org/api/drupal/modules%21system%21system.api.php/function/hook_uninstall/7
+ */
+function fdvegan_uninstall() {
+    /* Since hook_schema() does the table creates AND table drops, there's no schema uninstall to do here.
+     * The data inserted via fdvegan_install() will get deleted when the table is dropped.
+     */
+
+    /* If the uninstall process hangs, it may be due to a background batch script (recalculate_degrees) still
+     * running and locking some DB tables.  Try restarting the DB server & Apache.
+     */
+}
+
+
+/**
+ * Update to support new connections and process_status tables.
+ */
+function fdvegan_update_7000(/* &$sandbox */) {
+    $schema = array();
+
+    // "fdvegan_connections" table specification.
+    $schema['fdvegan_connections'] = array(
+        'description' => 'Stores actor connections by degrees.',
+        'fields' => array(
+            'person_id' => array(
+                'description' => t('person_id'),
+                'type' => 'int',
+                'unsigned' => TRUE,
+                'not null' => TRUE,
+            ),
+            'full_name' => array(
+                'description' => 'Snapshot of fdvegan_person.full_name',
+                'type' => 'varchar',
+                'length' => 255,
+                'size' => 'normal',
+                'not null' => TRUE,
+                'default' => '',
+            ),
+            'degree0_names' => array(
+                'description' => t('Actor connections within 0 degrees.'),
+                'type'        => 'text',
+//                'length'      => 4096,
+                'size'        => 'normal',
+                'not null'    => FALSE,
+                'default'     => NULL,
+            ),
+            'degree1_names' => array(
+                'description' => t('Actor connections within 1 degrees.'),
+                'type'        => 'text',
+//                'length'      => 4096,
+                'size'        => 'normal',
+                'not null'    => FALSE,
+                'default'     => NULL,
+            ),
+            'degree2_names' => array(
+                'description' => t('Actor connections within 2 degrees.'),
+                'type'        => 'text',
+//                'length'      => 4096,
+                'size'        => 'normal',
+                'not null'    => FALSE,
+                'default'     => NULL,
+            ),
+            'degree3_names' => array(
+                'description' => t('Actor connections within 3 degrees.'),
+                'type'        => 'text',
+//                'length'      => 4096,
+                'size'        => 'normal',
+                'not null'    => FALSE,
+                'default'     => NULL,
+            ),
+            'degree4_names' => array(
+                'description' => t('Actor connections within 4 degrees.'),
+                'type'        => 'text',
+//                'length'      => 4096,
+                'size'        => 'normal',
+                'not null'    => FALSE,
+                'default'     => NULL,
+            ),
+            'degree5_names' => array(
+                'description' => t('Actor connections within 5 degrees.'),
+                'type'        => 'text',
+//                'length'      => 4096,
+                'size'        => 'normal',
+                'not null'    => FALSE,
+                'default'     => NULL,
+            ),
+            'created' => array(
+                'description' => t('Timestamp for when record was created.'),
+                'mysql_type'  => 'DATETIME',
+//                'sqlite_type' => 'VARCHAR',
+                'not null'    => FALSE,
+//                'default' => NULL,
+                'default' => format_date(time(), 'custom', 'Y-m-d 00:00:00'),
+                // See hook_install() for the actual "INSERT TRIGGER"
+            ),
+            'updated' => array(
+                'description' => t('Timestamp for when record was last updated.'),
+                'mysql_type'  => 'DATETIME',
+//                'sqlite_type' => 'VARCHAR',
+                'not null'    => TRUE,
+//                'default' => 'CURRENT_TIMESTAMP',
+                'default' => format_date(time(), 'custom', 'Y-m-d 00:00:00'),
+                // See hook_install() for the actual "ON UPDATE" attribute
+            ),
+        ),
+        'primary key' => array('person_id'),
+        'foreign keys' => array(
+            'connections_ibfk_1' => array(
+                'table' => 'fdvegan_person',
+                'columns' => array('person_id' => 'person_id'),
+            ),
+        ),
+        'indexes' => array(
+            'person_id_idx' => array('person_id'),
+        ),
+    );  // end "fdvegan_connections" table specification.
+
+    // "fdvegan_process_status" table specification.
+    $schema['fdvegan_process_status'] = array(
+        'description' => 'Status data for batch / script / etc. in-progress processes.',
+        'fields' => array(
+            'process_id' => array(
+                'description' => t('Primary Key: Unique process ID.'),
+                'type'        => 'serial',
+                'unsigned'    => TRUE,
+                'not null'    => TRUE,
+            ),
+            'process_name' => array(
+                'description' => t('Unique machine-name of batch / script / process.'),
+                'type'        => 'varchar',
+                'length'      => 128,
+                'size'        => 'normal',
+                'not null'    => TRUE,
+                'default'     => '',
+            ),
+            'status' => array(
+                'description' => t('Human-readable status.'),
+                'type'        => 'varchar',
+                'length'      => 128,
+                'size'        => 'normal',
+                'not null'    => FALSE,
+                'default'     => NULL,
+            ),
+            'verbose_status' => array(
+                'description' => t('Human-readable long description of status.'),
+                'type'        => 'text',
+//                'length'      => 4096,
+                'size'        => 'normal',
+                'not null'    => FALSE,
+                'default'     => NULL,
+            ),
+            'movie_id' => array(
+                'description' => t('Optional: last movie_id processed.'),
+                'type'        => 'int',
+                'unsigned'    => TRUE,
+                'not null'    => FALSE,
+                'default'     => NULL,
+            ),
+            'person_id' => array(
+                'description' => t('Optional: last person_id processed.'),
+                'type'        => 'int',
+                'unsigned'    => TRUE,
+                'not null'    => FALSE,
+                'default'     => NULL,
+            ),
+            'counter' => array(
+                'description' => t('Optional: last loop / counter num processed.'),
+                'type'        => 'int',
+                'unsigned'    => FALSE,
+                'not null'    => FALSE,
+                'default'     => NULL,
+            ),
+            'context' => array(
+                'description' => t('Machine-readable context data.'),
+                'type'        => 'text',
+//                'length'      => 4096,
+                'size'        => 'normal',
+                'not null'    => FALSE,
+                'default'     => NULL,
+            ),
+            'created' => array(
+                'description' => t('Timestamp for when record was created.'),
+                'mysql_type'  => 'DATETIME',
+//                'sqlite_type' => 'VARCHAR',
+                'not null'    => FALSE,
+//                'default' => NULL,
+                'default' => format_date(time(), 'custom', 'Y-m-d 00:00:00'),
+                // See hook_install() for the actual "INSERT TRIGGER"
+            ),
+            'updated' => array(
+                'description' => t('Timestamp for when record was last updated.'),
+                'mysql_type'  => 'DATETIME',
+//                'sqlite_type' => 'VARCHAR',
+                'not null'    => TRUE,
+//                'default' => 'CURRENT_TIMESTAMP',
+                'default' => format_date(time(), 'custom', 'Y-m-d 00:00:00'),
+                // See hook_install() for the actual "ON UPDATE" attribute
+            ),
+            'synced' => array(
+                'description' => t('Optional: timestamp for when process was last synced from source.'),
+                'mysql_type'  => 'DATETIME',
+//                'sqlite_type' => 'VARCHAR',
+                'not null'    => FALSE,
+                'default' => NULL,
+            ),
+        ),
+        'primary key' => array('process_id'),
+        'unique keys' => array(
+            'process_name' => array('process_name'),
+        ),
+        'foreign keys' => array(
+            'process_status_ibfk_1' => array(
+                'table' => 'fdvegan_movie',
+                'columns' => array('movie_id' => 'movie_id'),
+            ),
+            'process_status_ibfk_2' => array(
+                'table' => 'fdvegan_person',
+                'columns' => array('person_id' => 'person_id'),
+            ),
+        ),
+        'indexes' => array(
+            'movieid_idx'  => array('movie_id'),
+            'personid_idx' => array('person_id'),
+        ),
+    );  // end "fdvegan_process_status" table specification.
+
+
+    // "fdvegan_featured_person" table specification.
+    $schema['fdvegan_featured_person'] = array(
+        'description' => 'Stores top-featured persons.',
+        'fields' => array(
+            'person_id' => array(
+                'description' => t('person_id'),
+                'type' => 'int',
+                'unsigned' => TRUE,
+                'not null' => TRUE,
+            ),
+            'full_name' => array(
+                'description' => 'Snapshot of fdvegan_person.full_name',
+                'type' => 'varchar',
+                'length' => 255,
+                'size' => 'normal',
+                'not null' => TRUE,
+                'default' => '',
+            ),
+            'created' => array(
+                'description' => t('Timestamp for when record was created.'),
+                'mysql_type'  => 'DATETIME',
+//                'sqlite_type' => 'VARCHAR',
+                'not null'    => FALSE,
+//                'default' => NULL,
+                'default' => format_date(time(), 'custom', 'Y-m-d 00:00:00'),
+                // See hook_install() for the actual "INSERT TRIGGER"
+            ),
+        ),
+        'primary key' => array('person_id'),
+        'foreign keys' => array(
+            'featured_persons_ibfk_1' => array(
+                'table' => 'fdvegan_person',
+                'columns' => array('person_id' => 'person_id'),
+            ),
+        ),
+        'indexes' => array(
+            'person_id_idx' => array('person_id'),
+        ),
+    );  // end "fdvegan_featured_person" table specification.
+
+
+    if (!db_table_exists('fdvegan_connections')) {
+        db_create_table('fdvegan_connections', $schema['fdvegan_connections']);
+        // Automatically update 'updated' to current timestamp whenever a row is changed
+        $result = db_query('ALTER TABLE {fdvegan_connections} MODIFY updated TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP');
+    }
+    if (!db_table_exists('fdvegan_process_status')) {
+        db_create_table('fdvegan_process_status', $schema['fdvegan_process_status']);
+        // Automatically update 'updated' to current timestamp whenever a row is changed
+        $result = db_query('ALTER TABLE {fdvegan_process_status} MODIFY updated TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP');
+
+        // Initialize the known process_status entries.
+        $sql = <<<__SQL__
+INSERT INTO {fdvegan_process_status} 
+  (process_name, status, verbose_status, created) VALUES 
+  ('CALC_DEGREES', 'READY', 'Ready to initialize; has not been run yet.', CURRENT_TIMESTAMP)
+__SQL__;
+        $result = db_query($sql);
+    }
+    if (!db_table_exists('fdvegan_featured_person')) {
+        db_create_table('fdvegan_featured_person', $schema['fdvegan_featured_person']);
+    }
+
+}
+

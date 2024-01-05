@@ -1,0 +1,54 @@
+name = FDVegan
+description = Module to find the Five Degrees of separation between Vegan movie actors.
+package = Vegan modules
+core = 7.x
+
+configure = admin/config/fdvegan/settings
+dependencies[] = block
+dependencies[] = libraries
+dependencies[] = locale
+dependencies[] = menu
+dependencies[] = mobile_detect
+; Module "chosen" is not required, just recommended to make select options much more user-friendly.
+; dependencies[] = chosen
+; Module "tablesorter" is not required, just recommended to make table output sortable.
+; dependencies[] = tablesorter
+
+;fdvegan.admin.php does not need auto-loading, as it is purely an include file:
+;files[] = fdvegan.admin.php
+
+files[] = fdvegan.install
+files[] = fdvegan.module
+files[] = fdvegan_base_class.php
+files[] = fdvegan_base_collection.php
+files[] = fdvegan_batch_process.php
+files[] = fdvegan_blocks.php
+files[] = fdvegan_connection.php
+files[] = fdvegan_content.php
+files[] = fdvegan_credit.php
+files[] = fdvegan_credit_collection.php
+files[] = fdvegan_imdb.php
+files[] = fdvegan_media.php
+files[] = fdvegan_media_collection.php
+files[] = fdvegan_media_size_collection.php
+files[] = fdvegan_movie.php
+files[] = fdvegan_movie_collection.php
+files[] = fdvegan_person.php
+files[] = fdvegan_person_collection.php
+files[] = fdvegan_person_tag_collection.php
+files[] = fdvegan_process_status.php
+files[] = fdvegan_quote.php
+files[] = fdvegan_quote_collection.php
+files[] = fdvegan_tag.php
+files[] = fdvegan_tag_collection.php
+files[] = fdvegan_tmdb.php
+files[] = fdvegan_util.php
+files[] = fdvegan_script_init_load.php
+files[] = TMDb.php
+; Each custom exception class must have its own file:
+files[] = exception/fdvegan_exception.php
+files[] = exception/fdvegan_invalidargumentexception.php
+files[] = exception/fdvegan_notfoundexception.php
+files[] = exception/fdvegan_notimplementedexception.php
+files[] = exception/fdvegan_pdoexception.php
+files[] = exception/fdvegan_tmdbexception.php

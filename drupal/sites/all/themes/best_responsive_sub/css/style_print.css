@@ -1,0 +1,81 @@
+/**
+ * style_print.css
+ *
+ * Page Styling for printed elements only
+ * (as opposed to normal on-Screen styling).
+ *
+ * @category   CSS
+ * @package    fdvegan
+ * @link       https://fivedegreevegan.aprojects.org
+ * @since      version 1.0
+ */
+
+
+@media print {
+
+    body {
+        width: 7in;
+        margin: 0;
+        padding: 0;
+        line-height: 1.4em;
+        word-spacing: 1px;
+        letter-spacing: 0.2px;
+        font-family: Verdana, Arial, Helvetica, sans-serif;
+        font-size: 12pt;
+        color: #000;
+        background-color: #FFFFFF;
+    }
+
+    /*
+     * Hide areas we do not want to print:
+     */
+    /*
+    img {
+        display: none;
+    }
+    */
+    /*
+    #sidebar-first {
+        display: none;
+    }
+    */
+    /*
+    #primary-menu {
+        display: none;
+    }
+    */
+    /*
+    .captcha {
+        display: none;
+    }
+    */
+
+    /* Break Page */
+    .fdv-on-print-page-break {
+        page-break-before: always;
+    }
+
+    .fdv-only-on-print {
+        display: block;
+    }
+    .fdv-no-print {
+        display: none;
+    }
+
+    /* Show URLs */
+    a:link, a:visited {
+        background: transparent;
+        color: #333;
+    /*    text-decoration: none;*/
+        text-decoration: underline;
+    }
+    #content a:link[href^="http"]:after,
+    #content a[href^="http"]:visited:after {
+        content: " (" attr(href) ") ";
+        font-size: 12pt;
+    }
+    #content a[href^="http"] {
+        color:#000;
+    }
+
+}  /* close @media */

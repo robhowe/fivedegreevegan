@@ -1,0 +1,2439 @@
+<?php
+/**
+ * fdvegan.module
+ *
+ * Module implementation for fdvegan.
+ * Main module implementation for finding the 5DV link between 2 given actors.
+ * Creates some initial static content, sets permissions, displays the main pages' content.
+ *
+ * PHP version 5.6
+ *
+ * @category   Admin
+ * @package    fdvegan
+ * @author     Rob Howe <rob@robhowe.com>
+ * @copyright  2015-2017 Rob Howe
+ * @license    This file is proprietary and subject to the terms defined in file LICENSE.txt
+ * @version    Bitbucket via git: $Id$
+ * @link       https://fivedegreevegan.aprojects.org
+ * @since      version 0.1
+ * @see        fdvegan.module
+ */
+
+
+    module_load_include('php', 'fdvegan', 'fdvegan_blocks');  // Include file fdvegan_blocks.php
+
+
+    /**
+     * Implementation of hook_permission().
+     */
+    function fdvegan_permission() {
+        return array(
+            'administer debug fdvegan' => array(
+                'title' => t('Administer Debug FDVegan'),
+                'description' => t('View debug info for FDVegan.'),
+                'restrict access' => TRUE,  // Only let admins access this page
+                'warning' => 'Warning: Give to trusted Admin roles only.',
+            ),
+            'administer fdvegan' => array(
+                'title' => t('Administer FDVegan'),
+                'description' => t('Perform administration tasks for FDVegan.'),
+                'restrict access' => TRUE,  // Only let admins access this page
+                'warning' => 'Warning: Give to trusted Content Admin roles only.',
+            ),
+            'pro fdvegan' => array(
+                'title' => t('Pro FDVegan'),
+                'description' => t('Use FDVegan, plus "Pro" functionality.'),
+            ),
+            'use fdvegan' => array(
+                'title' => t('Use FDVegan'),
+                'description' => t('View pages and do searches of content.'),
+            ),
+            'view fdvegan' => array(
+                'title' => t('View FDVegan'),
+                'description' => t('View the minimal "Apply for Access" FDVegan pages.'),
+            ),
+        );
+    }
+
+
+    /**
+     * Implementation of hook_enable().
+     */
+    function fdvegan_enable() {
+
+        fdvegan_Util::installVariables();  // setup all needed "fdvegan_*" variable_set()'s
+
+        // Create a new role (if it does not exist already):
+        $newRoles = array('fdvegan pro');
+        foreach ($newRoles as $r) {
+            if (!user_role_load_by_name($r)) {
+                $role = new stdClass();
+                $role->name = $r;
+                user_role_save($role);
+                $testRole = user_role_load_by_name($r);  // Verify it.
+                if ($testRole === FALSE) {
+                    $msg = "Could not create role \"{$r}\".";
+                    drupal_set_message($msg, 'error');
+                    fdvegan_Content::syslog('LOG_ERR', $msg);
+                }
+            }
+        }
+
+        // Just to make things easier for the admin, 
+        // we auto-enable the proper permissions here.
+        // They can, of course, be changed manually by an admin later.
+
+        $pro_fdvegan_role = user_role_load_by_name('fdvegan pro');
+        user_role_change_permissions($pro_fdvegan_role->rid, array(
+            'pro fdvegan'     => TRUE,
+            'use fdvegan'     => TRUE,
+            'view fdvegan'    => TRUE,
+            'access content'  => TRUE,
+            'search content'  => TRUE,
+            'vote on polls'   => TRUE,
+            'access comments' => TRUE,
+            'post comments'   => TRUE,
+            'use text format filtered_html' => TRUE,
+            'skip CAPTCHA'    => TRUE,
+            'access user profiles' => TRUE,
+            //'access user contact forms' => TRUE,
+            'access site-wide contact form' => TRUE,
+        ));
+
+        $authenticated_role = user_role_load_by_name('authenticated user');
+        user_role_change_permissions($authenticated_role->rid, array(
+            'use fdvegan'     => TRUE,
+            'view fdvegan'    => TRUE,
+            'access content'  => TRUE,
+            'access comments' => TRUE,
+            'access site-wide contact form' => TRUE,
+        ));
+
+        $anonymous_role = user_role_load_by_name('anonymous user');
+        user_role_change_permissions($anonymous_role->rid, array(
+            'use fdvegan'     => TRUE,
+            'view fdvegan'    => TRUE,
+            'access content'  => TRUE,
+            'access comments' => TRUE,
+            'access site-wide contact form' => TRUE,
+        ));
+    }
+
+    /**
+     * Implementation of hook_disable().
+     */
+    function fdvegan_disable() {
+        fdvegan_Util::uninstallVariables();  // remove all installed "fdvegan_*" variable_set()'s
+    }
+
+
+    /**
+     * Implements hook_page_alter().
+     */
+    function fdvegan_page_alter(&$page) {
+        /*
+         * Remove/disable the Admin Toolbar output on some pages:
+         */
+        if (user_access('access toolbar') &&
+            ((request_path() === 'actor') ||
+            (request_path() === 'movie') ||
+            (request_path() === 'actor-network') ||
+            (request_path() === 'actor-tree') ||
+            (request_path() === 'actor-tree-only') ||
+            (request_path() === 'rest-api'))
+         ) {
+            if (isset($page['page_top']) && isset($page['page_top']['toolbar'])) {
+                unset($page['page_top']['toolbar']);
+            }
+        }
+    }
+
+
+    /**
+     * Helper callback function used in fdvegan_menu().
+     */
+    function _fdvegan_user_menu_login_access_callback() {
+        return !user_is_logged_in() && user_access('view fdvegan');
+    }
+
+    /**
+     * Helper callback function used in fdvegan_menu().
+     */
+    function _fdvegan_user_menu_account_title_callback() {
+        global $user;
+        $username = !empty($user->name) ? $user->name : t('Anonymous');
+        return $username;
+    }
+
+
+    /**
+     * Implementation of hook_menu().
+     */
+    function fdvegan_menu() {
+        $items = array();
+
+        //
+        // Main menu links:
+        //
+
+        $items['actor-list'] = array(
+            'title'            => 'All Actors',
+            //'description'      => 'List of all vegan actors',
+            'type'             => MENU_NORMAL_ITEM,
+            'menu_name'        => 'main-menu',
+            'access arguments' => array('use fdvegan'),
+            'page callback'    => 'fdvegan_actor_list',
+            'weight'           => 10,
+        );
+        $items['actor'] = array(
+            'title'            => 'Actor Search',
+            //'description'      => 'Find your fave actors',
+            'type'             => MENU_NORMAL_ITEM,
+            'menu_name'        => 'main-menu',
+            'access arguments' => array('use fdvegan'),
+            'page callback'    => 'drupal_get_form',
+            'page arguments'   => array('fdvegan_actor_form'),
+            'weight'           => 12,
+        );
+        $items['actor-network'] = array(
+            'title'            => '',  //'5DV Actor Network',
+            'description'      => 'Vegan Actor Network',
+            'type'             => MENU_CALLBACK,
+            'access arguments' => array('use fdvegan'),
+            'page callback'    => 'fdvegan_actor_network',
+            //'weight'           => 14,
+        );
+        $items['actor-tree'] = array(
+            'title'            => '5DV Actor Tree',
+            'description'      => 'Vegan Actor Tree',
+            'type'             => MENU_CALLBACK,
+            'access arguments' => array('use fdvegan'),
+            'page callback'    => 'fdvegan_actor_tree',
+            //'weight'           => 16,
+        );
+        $items['actor-tree-only'] = array(
+            'title'            => '5DV Actor Tree',
+            'description'      => 'Vegan Actor Tree',
+            'type'             => MENU_CALLBACK,
+            'access arguments' => array('use fdvegan'),
+            'page callback'    => 'fdvegan_actor_tree_only',
+            //'weight'           => 16,
+        );
+        $items['movie'] = array(
+            'title'            => 'Movie Search',
+            //'description'      => 'Find your fave movies',
+            'type'             => MENU_NORMAL_ITEM,
+            'menu_name'        => 'main-menu',
+            'access arguments' => array('use fdvegan'),
+            'page callback'    => 'drupal_get_form',
+            'page arguments'   => array('fdvegan_movie_form'),
+            'weight'           => 18,
+        );
+        $items['movie-list'] = array(
+            'title'            => 'Movies',
+            //'description'      => 'List of vegan movies',
+            'type'             => MENU_CALLBACK,
+            'access arguments' => array('use fdvegan'),
+            'page callback'    => 'fdvegan_movie_list',
+            'weight'           => 20,
+        );
+        $items['game'] = array(
+            'title'            => 'Play the Game',
+            //'description'      => 'Find 5 degree connections',
+            'type'             => MENU_NORMAL_ITEM,
+            'menu_name'        => 'main-menu',
+            'access arguments' => array('use fdvegan'),
+            'page callback'    => 'fdvegan_game_view',
+            'weight'           => 22,
+        );
+        $items['play'] = array(
+            'title'            => 'Playing the Game',
+            //'description'      => 'Finding 5 degree connections',
+            'type'             => MENU_CALLBACK,
+            'menu_name'        => 'main-menu',
+            'access arguments' => array('use fdvegan'),
+            'page callback'    => 'fdvegan_play_view',
+            'weight'           => 24,
+        );
+/* TODO
+        $items['find-connection'] = array(
+            'title'            => 'Find Connection',
+            'description'      => 'Find your 5 degree connections',
+            'type'             => MENU_NORMAL_ITEM,
+            'menu_name'        => 'main-menu',
+            'access arguments' => array('use fdvegan'),
+            'page callback'    => 'fdvegan_find_connection',
+            'weight'           => 30,
+        );
+*/
+
+        //
+        // FDV-user menu links:
+        //
+
+        $items['login'] = array(
+            'title'            => 'Login',
+            //'description'      => 'User login',
+            'type'             => MENU_NORMAL_ITEM,
+            'menu_name'        => 'fdv-user-menu',
+            'access callback'  => '_fdvegan_user_menu_login_access_callback',
+            'page callback'    => 'drupal_goto',
+            'page arguments'   => array('user/login'),
+            'weight'           => 10,
+        );
+        $items['signup'] = array(
+            'title'            => 'Signup',
+            //'description'      => 'Create an account',
+            'type'             => MENU_NORMAL_ITEM,
+            'menu_name'        => 'fdv-user-menu',
+            'access callback'  => '_fdvegan_user_menu_login_access_callback',
+            'page callback'    => 'drupal_goto',
+            //'page arguments'   => array('user/login', array('fragment' => 'fdv-bottom-text')),
+            'page arguments'   => array('user/register'),
+            'weight'           => 20,
+        );
+        $items['account'] = array(
+            'title'            => 'Account',
+            'title callback'   => '_fdvegan_user_menu_account_title_callback',
+            //'description'      => 'User profile',
+            'type'             => MENU_NORMAL_ITEM,
+            'menu_name'        => 'fdv-user-menu',
+            'access callback' => 'user_is_logged_in',
+            'page callback'    => 'drupal_goto',
+            'page arguments'   => array('user'),
+            'weight'           => 30,
+        );
+        $items['logout'] = array(
+            'title'            => 'Logout',
+            //'description'      => 'User logout',
+            'type'             => MENU_NORMAL_ITEM,
+            'menu_name'        => 'fdv-user-menu',
+            'access callback' => 'user_is_logged_in',
+            'page callback'    => 'drupal_goto',
+            'page arguments'   => array('user/logout'),
+            'weight'           => 40,
+        );
+
+        //
+        // Admin links:
+        //
+
+        // For Admin top menu:
+        $items['admin/settings/fdvegan'] = array(
+            'title'            => 'Five Degrees of Vegan',
+            'description'      => 'Five Degrees of Vegan - Admin Page',
+//            'type'             => MENU_NORMAL_ITEM,
+            'access arguments' => array('administer fdvegan settings'),
+            'page callback'    => 'drupal_get_form',
+            'page arguments'   => array('fdvegan_admin_form'),
+            'weight'           => 4,
+            'file'             => 'fdvegan.admin.php',
+        );
+        // For "Admin->Configure" page:
+        $items['admin/config/fdvegan'] = array(
+            'title'            => 'Five Degrees of Vegan',
+            'description'      => 'Five Degrees of Vegan - Admin Page',
+            'type'             => MENU_NORMAL_ITEM,
+            'access arguments' => array('administer fdvegan settings'),
+            'page callback'    => 'drupal_get_form',
+            'page arguments'   => array('fdvegan_admin_form'),
+            'weight'           => 50,
+            'position'         => 'right',
+            'file'             => 'fdvegan.admin.php',
+        );
+        // For "Admin->Modules" page "Configure" gear-link:
+        $items['admin/config/fdvegan/settings'] = array(  // Matches setting in file: fdvegan.info
+            'title'            => 'Five Degrees of Vegan',
+            'description'      => 'Five Degrees of Vegan - Admin Page',
+            'type'             => MENU_NORMAL_ITEM,
+            'access arguments' => array('administer fdvegan settings'),
+            'page callback'    => 'drupal_get_form',
+            'page arguments'   => array('fdvegan_admin_form'),
+            'weight'           => 100,
+            'file'             => 'fdvegan.admin.php',
+        );
+
+        //
+        // Drupal Page Not Found page:
+        // See:  Configuration->Site information : Default 404 (not found) page
+        //
+        $items['page-not-found'] = array(
+            'title'            => 'Page Not Found',
+            'description'      => 'Page Not Found',
+            'type'             => MENU_CALLBACK,
+            'access callback'  => TRUE,
+            'page callback'    => 'fdvegan_page_not_found',
+        );
+
+        //
+        // Drupal Page Forbidden page:
+        // See:  Configuration->Site information : Default 403 (access denied) page
+        //
+        $items['page-forbidden'] = array(
+            'title'            => 'Page Forbidden',
+            'description'      => 'Page Forbidden',
+            'type'             => MENU_CALLBACK,
+            'access callback'  => TRUE,
+            'page callback'    => 'fdvegan_page_forbidden',
+        );
+
+        //
+        // Hidden (non-menu) pages:
+        //
+
+        $items['init-load'] = array(
+            'title'            => 'Initial Load',
+            'description'      => 'Five Degrees of Vegan - Admin - Initial Load',
+            'type'             => MENU_CALLBACK,
+            'access arguments' => array('administer fdvegan'),
+            'page callback'    => 'drupal_get_form',
+            'page arguments'   => array('fdvegan_init_load_form'),
+            'weight'           => 102,
+        );
+        $items['recalculate-degrees'] = array(
+            'title'            => 'Recalculate Degrees',
+            'description'      => 'Five Degrees of Vegan - Admin - Recalculate Degrees',
+            'type'             => MENU_CALLBACK,
+            'access arguments' => array('administer fdvegan'),
+            'page callback'    => 'drupal_get_form',
+            'page arguments'   => array('fdvegan_recalculate_degrees_form'),
+            'weight'           => 104,
+        );
+        $items['scrape-media'] = array(
+            'title'            => 'Scrape Media',
+            'description'      => 'Five Degrees of Vegan - Admin - Scrape Media',
+            'type'             => MENU_CALLBACK,
+            'access arguments' => array('administer fdvegan'),
+            'page callback'    => 'drupal_get_form',
+            'page arguments'   => array('fdvegan_scrape_media_form'),
+            'weight'           => 106,
+        );
+        $items['copy-local-media'] = array(
+            'title'            => 'Copy Local Media',
+            'description'      => 'Five Degrees of Vegan - Admin - Copy Local Media',
+            'type'             => MENU_CALLBACK,
+            'access arguments' => array('administer fdvegan'),
+            'page callback'    => 'drupal_get_form',
+            'page arguments'   => array('fdvegan_copy_local_media_form'),
+            'weight'           => 108,
+        );
+        $items['actor-load'] = array(
+            'title'            => 'Load Actor',
+            'description'      => 'Five Degrees of Vegan - Admin - Load Actor',
+            'type'             => MENU_CALLBACK,
+            'access arguments' => array('administer fdvegan'),
+            'page callback'    => 'drupal_get_form',
+            'page arguments'   => array('fdvegan_actor_load_form'),
+            'weight'           => 110,
+        );
+        $items['init-content-load'] = array(
+            'title'            => 'Initial Content Load',
+            'description'      => 'Five Degrees of Vegan - Admin - Initial Content Load',
+            'type'             => MENU_CALLBACK,
+            'access arguments' => array('administer fdvegan'),
+            'page callback'    => 'fdvegan_initial_content_load_view',
+            'weight'           => 112,
+        );
+        $items['init-dir-creation'] = array(
+            'title'            => 'Initial Directories Creation',
+            'description'      => 'Five Degrees of Vegan - Admin - Initial Directories Creation',
+            'type'             => MENU_CALLBACK,
+            'access arguments' => array('administer fdvegan'),
+            'page callback'    => 'drupal_get_form',
+            'page arguments'   => array('fdvegan_initial_dir_creation_form'),
+            'file'             => 'fdvegan.admin.php',
+            'weight'           => 114,
+        );
+        $items['clear-caches'] = array(
+            'title'            => 'Clear Caches',
+            'description'      => 'Five Degrees of Vegan - Admin - Clear Caches',
+            'type'             => MENU_CALLBACK,
+            'access arguments' => array('administer fdvegan'),
+            'page callback'    => 'drupal_get_form',
+            'page arguments'   => array('fdvegan_clear_caches_form'),
+            'file'             => 'fdvegan.admin.php',
+            'weight'           => 116,
+        );
+        $items['db-records-info'] = array(
+            'title'            => 'DB Records Info',
+            'description'      => 'Five Degrees of Vegan - Admin - DB Records Info',
+            'type'             => MENU_CALLBACK,
+            'access arguments' => array('administer fdvegan'),
+            'page callback'    => 'drupal_get_form',
+            'page arguments'   => array('fdvegan_db_records_info_form'),
+            'file'             => 'fdvegan.admin.php',
+            'weight'           => 118,
+        );
+        $items['debug-page'] = array(
+            'title'            => 'Debug Page',
+            'description'      => 'Five Degrees of Vegan - Debug Page',
+            'type'             => MENU_CALLBACK,
+            'access arguments' => array('administer fdvegan'),
+            'page callback'    => 'fdvegan_debug_view',
+            'weight'           => 120,
+        );
+
+        return $items;
+    }
+
+
+    /**
+     * To hide unnecessary pages like:
+     *   https://fivedegreevegan.aprojects.org/taxonomy/term/1
+     *   https://fivedegreevegan.aprojects.org/taxonomy/term/1/view
+     *   https://fivedegreevegan.aprojects.org/taxonomy/term/1/feed
+     * and to redirect pages like:
+     *   https://fivedegreevegan.aprojects.org/node
+     */
+    function fdvegan_menu_alter(&$items) {
+        unset($items['taxonomy/term/%taxonomy_term']);
+        unset($items['taxonomy/term/%taxonomy_term/view']);
+        unset($items['taxonomy/term/%taxonomy_term/feed']);  // To hide the feed as well.
+
+        $items['node']['page callback'] = 'fdvegan_node_page_view';  // Redirect to front page.
+        $items['node']['page arguments'] = array('dummy');
+    }
+
+    /**
+     * This is currently only called for the /node page.
+     * If this is ever called for the /node/%node pages, then more work is needed.
+     */
+    function fdvegan_node_page_view($node) {
+        drupal_goto('<front>');
+    }
+
+
+    function fdvegan_initial_front_page_load() {
+        global $user;
+
+// DEBUG:  useful function calls:
+//        echo '<pre>filter_formats: ' . print_r(filter_formats(), true) . '</pre><br />';
+//        echo '<pre>node_type_get_types: ' . print_r(node_type_get_types(), true) . '</pre><br />';
+//        echo '<pre>drupal_lookup_path(): ' . print_r(drupal_lookup_path('source', 'home'), true) . '</pre><br />';
+
+        drupal_lookup_path('wipe', 'home');  // clear cache
+        if (drupal_lookup_path('source', 'home')) {
+            $link = l('delete it', 'admin/content');
+            $msg = "Front page \"/home\" already exists. Please {$link} before attempting to Create Initial Content.";
+            drupal_set_message($msg, 'warning');
+            return false;
+        }
+
+        $node = new stdClass();
+        $node->title    = 'Front Page';
+        $node->type     = 'page';
+        $node->language = 'en';  // LANGUAGE_NONE; or 'en' if locale is enabled
+        $node->path     = array(
+                                'alias'    => 'home',
+                                'pid'      => null,
+                                'source'   => null,
+                                'language' => 'en',
+                                'pathauto' => 1,
+                               );
+        node_object_prepare($node); // Sets some defaults. Invokes hook_prepare() and hook_node_prepare().
+        $node->uid     = $user->uid; 
+        $node->status  = 1;  //(1 or 0): published or not
+        $node->sticky  = 1;
+        $node->promote = 1;  //(1 or 0): promoted to front page
+        $node->comment = 1;  // 0 = comments disabled, 1 = read only, 2 = read/write
+
+        // Let's add standard body field
+        $field_langcode = field_language('node', $node, 'body');
+
+        $content = '
+<div class="center"><img id="fdv-splash-logo" src="/sites/default/files/pictures/fdv_splash_logo.png" alt="Five Degrees of Vegan logo" /></div>
+<div id="fdv-homepage-content">Home of the <strong>Five</strong> Degree Vegan</div>
+                   ';  // main body content
+        $node->body[$field_langcode][0]['value']   = $content;  // main body content
+//        $node->body[$field_langcode][0]['summary'] = text_summary($content);
+        $node->body[$field_langcode][0]['format']  = 'full_html';  // filter_default_format(), filtered_html, full_html, plain_text, or php_code
+
+        $node = node_submit($node);  // Prepare node for saving
+        node_save($node);
+
+        // Add a message for the user to see:
+        $prev_val = variable_get('site_frontpage');
+        $link = l('Admin->Site information->Default front page', 'admin/config/system/site-information');
+        if ($prev_val !== 'home') {
+            variable_set('site_frontpage', 'home');
+            $msg = "Front page \"/home\" content created.  Front Page updated from {$prev_val} to \"home\".  Now you must go to {$link} and Save configuration.";
+        } else {
+            $msg = "Front page \"/home\" content created.  Front Page was already correctly set to \"home\".  Now you must go to {$link} and Save configuration.";
+        }
+        drupal_set_message($msg);
+        return true;
+    }
+
+
+    function fdvegan_initial_about_load() {
+        global $user;
+
+        drupal_lookup_path('wipe', 'about');  // clear cache
+        if (drupal_lookup_path('source', 'about')) {
+            $link = l('delete it', 'admin/content');
+            $msg = "About page \"/about\" already exists. Please {$link} before attempting to Create Initial Content.";
+            drupal_set_message($msg, 'warning');
+            return false;
+        }
+
+        $node = new stdClass();
+        $node->title    = 'About';
+        $node->type     = 'page';
+        $node->language = 'en';  // LANGUAGE_NONE; or 'en' if locale is enabled
+        $node->path     = array(
+                                'alias'    => 'about',
+                                'pid'      => null,
+                                'source'   => null,
+                                'language' => 'en',
+                                'pathauto' => 1,
+                               );
+        node_object_prepare($node); // Sets some defaults. Invokes hook_prepare() and hook_node_prepare().
+        $node->uid     = $user->uid; 
+        $node->status  = 1;  //(1 or 0): published or not
+        $node->sticky  = 0;
+        $node->promote = 0;  //(1 or 0): promoted to front page
+        $node->comment = 1;  // 0 = comments disabled, 1 = read only, 2 = read/write
+
+        // Let's add standard body field
+        $field_langcode = field_language('node', $node, 'body');
+
+        $earthbalance_link = l('EarthBalance&reg;',
+                               'https://earthbalancenatural.com/',
+                               array('html' => TRUE,
+                                     'external' => TRUE,
+                                     'attributes' => array('target'=> '_blank',
+                                                           'rel'   => 'external',
+                                                           'title' => t('Earth Balance'),
+                                                          ),
+                                    )
+                              );
+//        $fdv_logo_img = '<img src="sites/default/files/pictures/fdv_logo_green.png" alt="5DV" class="fdv-img-in-text" />';
+        $smiley_img_tag = theme('image', array(
+                                'path' => 'sites/default/files/pictures/smiley.png',
+                                'alt'  => 'smiley',
+                                'attributes' => array('class' => 'fdv-smiley',
+                                    ),
+                               ));
+        $content = <<<EOT
+Five Degrees of Vegan (<span class="fdv-brand-text">5&deg; Vegan</span>) is a game designed for people who love movies and the actors who star in them.  The main idea for <span class="fdv-brand-text">5&deg; Vegan</span> was inspired by the well-known <span class="italic">Six Degrees of Kevin Bacon</span> game, based on the concept that any person on the planet can be connected to any other person in just six steps, or &ldquo;degrees of separation&rdquo;.  The Kevin Bacon game challenges players to connect him to any other actor by no more than six degrees of separation.  Whether you’re a fan of Bacon or not, everyone knows bacon is not vegan!  {$smiley_img_tag}
+
+We at <span class="fdv-brand-text">5&deg; Vegan</span> challenge you to prove that all vegan (and vegetarian) actors are no more than FIVE degrees apart.  Now THAT’S better than bacon!  As time goes on, and more and more actors become veg*an, the <span class="fdv-brand-text">5&deg; Vegan</span> dream will become undeniable and irresistible to play with your family, friends, and coworkers!
+
+Most of all, we’d like to thank all of our favorite vegan actors for the great movies they make.  We also hope you’ll enjoy playing the game while you learn about the ever-multiplying number of vegan thespians and, at the same time, discover some new movies you haven’t seen yet or revisit great movies you already love.
+
+So, why not celebrate these wonderful people by picking a movie from the <span class="fdv-brand-text">5&deg; V</span> website today, sit back with a nice warm bowl of popcorn with {$earthbalance_link} "butter" and enjoy?  Or challenge someone right now to a few rounds of <span class="fdv-brand-text">5&deg; Vegan</span> using your phone, tablet, laptop or PC!
+EOT;
+
+        $node->body[$field_langcode][0]['value']   = $content;  // main body content
+//        $node->body[$field_langcode][0]['summary'] = text_summary($content);
+        $node->body[$field_langcode][0]['format']  = 'full_html';  // filter_default_format(), filtered_html, full_html, plain_text, or php_code
+
+        $node = node_submit($node);  // Prepare node for saving
+        node_save($node);
+
+        // Now make a menu entry for it.
+
+        $path = drupal_lookup_path('source', 'about');
+        $item = array (
+            'link_title'  => 'About',
+            'link_path'   => $path,
+            'router_path' => 'node/%',
+            'menu_name'   => 'main-menu',
+            'weight'      => 8,
+            'plid'        => 0,
+          );
+          menu_link_save($item);
+
+        // Add a message for the user to see:
+        $msg = "About page \"/about\" content created.";
+        drupal_set_message($msg);
+        return true;
+    }
+
+
+    function fdvegan_initial_faq_load() {
+        global $user;
+
+        drupal_lookup_path('wipe', 'faq');  // clear cache
+        if (drupal_lookup_path('source', 'faq')) {
+            $link = l('delete it', 'admin/content');
+            $msg = "FAQ page \"/faq\" already exists. Please {$link} before attempting to Create Initial Content.";
+            drupal_set_message($msg, 'warning');
+            return false;
+        }
+
+        $node = new stdClass();
+        $node->title    = 'FAQ';
+        $node->type     = 'page';
+        $node->language = 'en';  // LANGUAGE_NONE; or 'en' if locale is enabled
+        $node->path     = array(
+                                'alias'    => 'faq',
+                                'pid'      => null,
+                                'source'   => null,
+                                'language' => 'en',
+                                'pathauto' => 1,
+                               );
+        node_object_prepare($node); // Sets some defaults. Invokes hook_prepare() and hook_node_prepare().
+        $node->uid     = $user->uid; 
+        $node->status  = 1;  //(1 or 0): published or not
+        $node->sticky  = 0;
+        $node->promote = 0;  //(1 or 0): promoted to front page
+        $node->comment = 1;  // 0 = comments disabled, 1 = read only, 2 = read/write
+
+        // Let's add standard body field
+        $field_langcode = field_language('node', $node, 'body');
+
+        $tmdb_link = l(t('TheMovieDB.org'),
+                       'https://www.themoviedb.org/',
+                       array('html' => TRUE,
+                             'external' => TRUE,
+                             'attributes' => array('target'=> '_blank',
+                                                   'title' => t('The Movie Database'),
+                                                  ),
+                            )
+                      );
+        $wikipedia_link = l(t('Wikipedia'),
+                              'https://www.wikipedia.org',
+                              array('html' => TRUE,
+                                    'external' => TRUE,
+                                    'attributes' => array('target'=> '_blank',
+                                                          'title' => t('WikipediA: The Free Encyclopedia'),
+                                                         ),
+                                   )
+                           );
+        $websites_link = l(t('websites and social media'),
+                           'special-thanks'
+                        );
+        $level_5_link = l('Level-5 vegans everywhere',
+                          'https://www.vegan.com/level-5-vegan/',
+                          array('html' => TRUE,
+                                'external' => TRUE,
+                                'attributes' => array('target'=> '_blank',
+                                                      'rel'   => 'external',
+                                                      'title' => t('“The Simpsons” created the term “Level 5 Vegan”'),
+                                                     ),
+                                   )
+                         );
+        $six_degrees_link = l('6&deg;.org',
+                              'https://www.sixdegrees.org',
+                              array('html' => TRUE,
+                                    'external' => TRUE,
+                                    'attributes' => array('target'=> '_blank',
+                                                          'rel'   => 'external',
+                                                          //'title' => t('Six Degrees Organization'),
+                                                         ),
+                                   )
+                             );
+        $mathworld_link = l(t('Wolfram MathWorld'),
+                              'http://mathworld.wolfram.com/SmallWorldNetwork.html',
+                              array('html' => TRUE,
+                                    'external' => TRUE,
+                                    'attributes' => array('target'=> '_blank',
+                                                          'rel'   => 'external',
+                                                          'title' => t('Wolfram MathWorld offers a short explanation'),
+                                                         ),
+                                   )
+                           );
+        $networks_link = l(t('Small-World Networks'),
+                             'https://www.ncbi.nlm.nih.gov/pmc/articles/PMC3604768/',
+                             array('html' => TRUE,
+                                   'external' => TRUE,
+                                   'attributes' => array('target'=> '_blank',
+                                                         'rel'   => 'external',
+                                                         'title' => t('The National Center for Biotechnology Information explains the mathematical concepts behind “The Ubiquity of Small-World Networks”'),
+                                                        ),
+                                  )
+                          );
+        $how_help_link = l(t('How Can I Help?'),
+                             'how-help'
+                             );
+        $contact_us_link = l(t('Contact Us'),
+                               'contact'
+                            );
+        $send_us_email_link = l(t('send us an email'),
+                                  'contact'
+                               );
+        $email_to_us_link = l(t('email to us'),
+                                'contact'
+                             );
+
+        $vegan_com_link = l(t('Vegan.com'),
+                              'https://www.vegan.com/',
+                              array('html' => TRUE,
+                                    'external' => TRUE,
+                                    'attributes' => array('target'=> '_blank',
+                                                          'rel'   => 'external',
+                                                          'title' => t('Making vegan easy.'),
+                                                         ),
+                                   )
+                           );
+        $veg_news_link = l(t('VegNews'),
+                             'https://vegnews.com/',
+                             array('html' => TRUE,
+                                   'external' => TRUE,
+                                   'attributes' => array('target'=> '_blank',
+                                                         'rel'   => 'external',
+                                                         'title' => t('Vegan. Think. Eat. Thrive.') . '&trade;',
+                                                        ),
+                                  )
+                          );
+        $veg_res_link = l(t('The Vegetarian Resource Group'),
+                            'https://www.vrg.org/',
+                            array('html' => TRUE,
+                                  'external' => TRUE,
+                                  'attributes' => array('target'=> '_blank',
+                                                        'rel'   => 'external',
+                                                        'title' => t('Health | Environment | Ethics'),
+                                                       ),
+                                 )
+                         );
+        $oh_glows_link = l(t('Oh She Glows'),
+                             'https://ohsheglows.com/',
+                             array('html' => TRUE,
+                                   'external' => TRUE,
+                                   'attributes' => array('target'=> '_blank',
+                                                         'rel'   => 'external',
+                                                         'title' => t('Glow from the inside out'),
+                                                        ),
+                                  )
+                         );
+        $vegie_head_link = l(t('VegieHead'),
+                               'https://vegiehead.com/',
+                               array('html' => TRUE,
+                                     'external' => TRUE,
+                                     'attributes' => array('target'=> '_blank',
+                                                           'rel'   => 'external',
+                                                           'title' => t('Plant based food, made with love!'),
+                                                          ),
+                                    )
+                         );
+        $post_punk_link = l(t('The Post Punk Kitchen'),
+                              'https://www.theppk.com/',
+                              array('html' => TRUE,
+                                    'external' => TRUE,
+                                    'attributes' => array('target'=> '_blank',
+                                                          'rel'   => 'external',
+                                                          'title' => t('Vegan cooking and baking. Join the fun!'),
+                                                         ),
+                                   )
+                           );
+        $thanks_link = l(t('list'),
+                           'special-thanks'
+                        );
+
+        $content = <<<EOT
+<div id="accordion">
+        <h4>What does the word veg*n (veg*an) mean?</h4>
+        <div>Vegan or Vegetarian.  A vegan is someone who eats a plant-based diet, with no animal products (like meat) or by-products (like dairy or eggs).  Vegetarians do not eat animal products, but may eat animal by-products.</div>
+
+        <h4>Where do you get your info from?</h4>
+        <div>Some of our data sources include {$tmdb_link} and {$wikipedia_link}.  We use numerous {$websites_link} to cross-reference all of our veg*n-related information and to keep our records as up-to-date as possible.</div>
+
+        <h4>How can I add an actor to your list?</h4>
+        <div>First, you need to add the actor’s info to {$tmdb_link}, if it’s not there already.  Then, simply {$send_us_email_link} and we’ll update our records as soon as possible.  Thanks!</div>
+
+        <h4>How can I report some erroneous or newer info about an actor or movie?</h4>
+        <div>Our initial data comes from {$tmdb_link}, so anything erroneous on their website must be corrected there first.  Otherwise, for any vegan-related info, feel free to notify us through our &ldquo;{$contact_us_link}&rdquo; page.</div>
+
+        <h4>Where can I find out more about becoming a vegetarian or vegan?</h4>
+        <div>Here are a couple of great websites for all kinds of vegan lifestyle, nutrition, and ethical living information: {$vegan_com_link}, {$veg_news_link}, and {$veg_res_link}.  For lots of great recipes, try one of these websites:  {$oh_glows_link}, {$vegie_head_link}, and {$post_punk_link}.  These are just a few of the many great vegetarian and vegan resources on the internet – Just type “vegan” or “vegetarian” or “healthy eating” to begin your search!</div>
+
+        <h4>How can I help?</h4>
+        <div>See our &ldquo;{$how_help_link}&rdquo; page, and spread the word.</div>
+
+        <h4>Why do I have to create an account to see certain features?</h4>
+        <div>Unauthenticated spammers and web-bots slow down our website.  By requiring you to register an account we improve performance for everyone.</div>
+
+        <h4>Why do you hate Kevin Bacon so much?</h4>
+        <div>No, no, no.  We here at <span class="fdv-brand-text">5&deg;V</span> don’t hate Kevin Bacon, or most of the movies in which he has acted.  He’s the inspiration for the popular Six Degrees of Bacon game, which in turn, inspired our Five Degrees of Vegan game (along with a nod to {$level_5_link}).  In fact, Kevin Bacon has done some pretty good stuff; shout out to {$six_degrees_link}</div>
+
+        <h4>What is the original idea behind &ldquo;degrees of separation&rdquo;?</h4>
+        <div>Three students from Albright College invented &ldquo;6 Degrees of Kevin Bacon&rdquo; in 1994.  For more detailed, nerdy information check out: {$mathworld_link} and {$networks_link}</div>
+
+        <h4>How can I share my original 5&deg; Vegan game variations?</h4>
+        <div>Feel free to {$send_us_email_link} about it.</div>
+
+        <h4>What new features are you planning to add?</h4>
+        <div>We’re currently working to make <span class="fdv-brand-text">5&deg;V</span> more mobile-device-friendly.  We’re also hoping to soon add an area where registered users can challenge themselves by playing the <span class="fdv-brand-text">5&deg;V</span> trivia game against the computer in solitary mode.  And of course we’re always looking to add more detailed info about actors and movies, as well as links to videos of movie trailers.  Depending on user feedback, we may even add Forums and/or Blog support.</div>
+
+        <h4>How can I request a new website feature?</h4>
+        <div>Feel free to send an {$email_to_us_link}.</div>
+
+        <h4>Special thanks.</h4>
+        <div>Many resources have been tapped to keep <span class="fdv-brand-text">5&deg;V</span> up and running.  Here is a {$thanks_link} of some of those we would like to thank specifically.</div>
+</div>
+EOT;
+
+        $node->body[$field_langcode][0]['value']   = $content;  // main body content
+//        $node->body[$field_langcode][0]['summary'] = text_summary($content);
+        $node->body[$field_langcode][0]['format']  = 'full_html';  // filter_default_format(), filtered_html, full_html, plain_text, or php_code
+
+        $node = node_submit($node);  // Prepare node for saving
+        node_save($node);
+
+        // Now make a menu entry for it.
+
+        $path = drupal_lookup_path('source', 'faq');
+        $item = array (
+            'link_title'  => 'FAQ',
+            'link_path'   => $path,
+            'router_path' => 'node/%',
+            'menu_name'   => 'main-menu',
+            'weight'      => 30,
+            'plid'        => 0,
+          );
+          menu_link_save($item);
+
+        // Add a message for the user to see:
+        $msg = "FAQ page \"/faq\" content created.";
+        drupal_set_message($msg);
+        return true;
+    }
+
+
+    function fdvegan_initial_how_help_load() {
+        global $user;
+
+        drupal_lookup_path('wipe', 'how-help');  // clear cache
+        if (drupal_lookup_path('source', 'how-help')) {
+            $link = l('delete it', 'admin/content');
+            $msg = "How-Help page \"/how-help\" already exists. Please {$link} before attempting to Create Initial Content.";
+            drupal_set_message($msg, 'warning');
+            return false;
+        }
+
+        $node = new stdClass();
+        $node->title    = 'How Can I Help?';
+        $node->type     = 'page';
+        $node->language = 'en';  // LANGUAGE_NONE; or 'en' if locale is enabled
+        $node->path     = array(
+                                'alias'    => 'how-help',
+                                'pid'      => null,
+                                'source'   => null,
+                                'language' => 'en',
+                                'pathauto' => 1,
+                               );
+        node_object_prepare($node); // Sets some defaults. Invokes hook_prepare() and hook_node_prepare().
+        $node->uid     = $user->uid; 
+        $node->status  = 1;  //(1 or 0): published or not
+        $node->sticky  = 0;
+        $node->promote = 0;  //(1 or 0): promoted to front page
+        $node->comment = 1;  // 0 = comments disabled, 1 = read only, 2 = read/write
+
+        // Let's add standard body field
+        $field_langcode = field_language('node', $node, 'body');
+
+        $tmdb_link = l(t('TMDb'),
+                       'https://www.themoviedb.org/',
+                       array('html' => TRUE,
+                             'external' => TRUE,
+                             'attributes' => array('target'=> '_blank',
+                                                   'title' => t('The Movie Database'),
+                                                  ),
+                            )
+                      );
+        $contact_link = l(t('Contact Us'),
+                            'contact'
+                         );
+        $share_link = l(t('Share Us'), 'share');
+        $content = <<<EOT
+If you would like to help add more vegan actors who are not currently in our database, please do so by adding them to the {$tmdb_link} website first.  We cannot add a vegan actor until they first exist on {$tmdb_link}.
+
+If you would like us to start listing an existing TMDb actor as being vegan, please {$contact_link} and include at least one instance of verifiable online proof.
+
+We are not currently looking for help in website development, but we welcome any comments or suggestions.  Simply use our {$contact_link} form.
+
+The best way to support us is to {$share_link} through your favorite social media.
+
+Thank you!
+EOT;
+
+        $node->body[$field_langcode][0]['value']   = $content;  // main body content
+//        $node->body[$field_langcode][0]['summary'] = text_summary($content);
+        $node->body[$field_langcode][0]['format']  = 'full_html';  // filter_default_format(), filtered_html, full_html, plain_text, or php_code
+
+        $node = node_submit($node);  // Prepare node for saving
+        node_save($node);
+
+        // Note - unlike some other pages, the How-Help page has no menu link.
+
+        // Add a message for the user to see:
+        $msg = "How-Help page \"/how-help\" content created.";
+        drupal_set_message($msg);
+        return true;
+    }
+
+
+    function fdvegan_initial_special_thanks_load() {
+        global $user;
+
+        drupal_lookup_path('wipe', 'special-thanks');  // clear cache
+        if (drupal_lookup_path('source', 'special-thanks')) {
+            $link = l('delete it', 'admin/content');
+            $msg = "Special-Thanks page \"/special-thanks\" already exists. Please {$link} before attempting to Create Initial Content.";
+            drupal_set_message($msg, 'warning');
+            return false;
+        }
+
+        $node = new stdClass();
+        $node->title    = 'Special Thanks';
+        $node->type     = 'page';
+        $node->language = 'en';  // LANGUAGE_NONE; or 'en' if locale is enabled
+        $node->path     = array(
+                                'alias'    => 'special-thanks',
+                                'pid'      => null,
+                                'source'   => null,
+                                'language' => 'en',
+                                'pathauto' => 1,
+                               );
+        node_object_prepare($node); // Sets some defaults. Invokes hook_prepare() and hook_node_prepare().
+        $node->uid     = $user->uid; 
+        $node->status  = 1;  //(1 or 0): published or not
+        $node->sticky  = 0;
+        $node->promote = 0;  //(1 or 0): promoted to front page
+        $node->comment = 1;  // 0 = comments disabled, 1 = read only, 2 = read/write
+
+        // Let's add standard body field
+        $field_langcode = field_language('node', $node, 'body');
+
+        $tmdb_link = l(t('TMDb'),
+                       'https://www.themoviedb.org/',
+                       array('html' => TRUE,
+                             'external' => TRUE,
+                             'attributes' => array('target'=> '_blank',
+                                                   'title' => t('The Movie Database'),
+                                                  ),
+                            )
+                      );
+        $imdb_link = l(t('IMDb'),
+                         'https://www.imdb.com/list/ls000496650/',
+                         array('html' => TRUE,
+                               'external' => TRUE,
+                               'attributes' => array('target'=> '_blank',
+                                                     'title' => t('The Internet Movie Database'),
+                                                    ),
+                              )
+                      );
+        $wikipedia_link = l(t('Wikipedia'),
+                              'https://www.wikipedia.org/',
+                              array('html' => TRUE,
+                                    'external' => TRUE,
+                                    'attributes' => array('target'=> '_blank',
+                                                          'title' => t('WikipediA: The Free Encyclopedia'),
+                                                         ),
+                                   )
+                           );
+        $soystache_link = l(t('SoyStache'),
+                              'https://www.soystache.com/',
+                              array('html' => TRUE,
+                                    'external' => TRUE,
+                                    'attributes' => array('target'=> '_blank',
+                                                          'title' => t('SoyStache'),
+                                                         ),
+                                   )
+                           );
+        $huffpost_link = l(t('Huffington Post'),
+                             'https://www.huffingtonpost.com/2013/12/01/vegan-celebrities_n_4351908.html',
+                             array('html' => TRUE,
+                                   'external' => TRUE,
+                                   'attributes' => array('target'=> '_blank',
+                                                         'title' => t('Huffington Post'),
+                                                        ),
+                                  )
+                          );
+        $peta_link = l(t('PETA'),
+                         'https://www.peta.org/features/peta-sexiest-vegan-celebrities-2017/',
+                         array('html' => TRUE,
+                               'external' => TRUE,
+                               'attributes' => array('target'=> '_blank',
+                                                     'title' => t('PETA'),
+                                                    ),
+                              )
+                      );
+        $happycow_link = l(t('HappyCow'),
+                             'https://www.happycow.net/',
+                             array('html' => TRUE,
+                                   'external' => TRUE,
+                                   'attributes' => array('target'=> '_blank',
+                                                         'title' => t('HappyCow'),
+                                                        ),
+                                  )
+                          );
+
+        $content = <<<EOT
+Many thanks to our main source of actor and movie data: the {$tmdb_link} website.
+
+Numerous online resources are consulted in finding new veg*n actors.  Some of these sources include:
+<ul>
+  <li>{$imdb_link}</li>
+  <li>{$wikipedia_link}</li>
+  <li>{$soystache_link}</li>
+  <li>{$huffpost_link}</li>
+  <li>{$peta_link}</li>
+  <li>{$happycow_link}</li>
+</ul>
+
+Thank you all!
+EOT;
+
+        $node->body[$field_langcode][0]['value']   = $content;  // main body content
+//        $node->body[$field_langcode][0]['summary'] = text_summary($content);
+        $node->body[$field_langcode][0]['format']  = 'full_html';  // filter_default_format(), filtered_html, full_html, plain_text, or php_code
+
+        $node = node_submit($node);  // Prepare node for saving
+        node_save($node);
+
+        // Note - unlike some other pages, the Special-Thanks page has no menu link.
+
+        // Add a message for the user to see:
+        $msg = "Special-Thanks page \"/special-thanks\" content created.";
+        drupal_set_message($msg);
+        return true;
+    }
+
+
+    /**
+     * Create Social/Sharing page content with AddToAny button.
+     *
+     * @see fdvegan_blocks.php::_fdvegan_social_block_content()
+     */
+    function fdvegan_initial_share_us_load() {
+        global $user;
+
+        drupal_lookup_path('wipe', 'share');  // clear cache
+        if (drupal_lookup_path('source', 'share')) {
+            $link = l('delete it', 'admin/content');
+            $msg = "Share-Us page \"/share\" already exists. Please {$link} before attempting to Create Initial Content.";
+            drupal_set_message($msg, 'warning');
+            return false;
+        }
+
+        $node = new stdClass();
+        $node->title    = 'Share Us';
+        $node->type     = 'page';
+        $node->language = 'en';  // LANGUAGE_NONE; or 'en' if locale is enabled
+        $node->path     = array(
+                                'alias'    => 'share',
+                                'pid'      => null,
+                                'source'   => null,
+                                'language' => 'en',
+                                'pathauto' => 1,
+                               );
+        node_object_prepare($node); // Sets some defaults. Invokes hook_prepare() and hook_node_prepare().
+        $node->uid     = $user->uid; 
+        $node->status  = 1;  //(1 or 0): published or not
+        $node->sticky  = 0;
+        $node->promote = 0;  //(1 or 0): promoted to front page
+        $node->comment = 1;  // 0 = comments disabled, 1 = read only, 2 = read/write
+
+        // Let's add standard body field
+        $field_langcode = field_language('node', $node, 'body');
+
+        $content = <<<EOT
+Share us through any of your favorite social media outlets.<br />
+Just use the “Share/Save” button you see near the bottom<span class="mobile-hide"> right</span> of every page.
+EOT;
+
+        $node->body[$field_langcode][0]['value']   = $content;  // main body content
+//        $node->body[$field_langcode][0]['summary'] = text_summary($content);
+        $node->body[$field_langcode][0]['format']  = 'full_html';  // filter_default_format(), filtered_html, full_html, plain_text, or php_code
+
+        $node = node_submit($node);  // Prepare node for saving
+        node_save($node);
+
+        // Note - unlike some other pages, the Share-Us page has no menu link.
+
+        // Add a message for the user to see:
+        $msg = "Share-Us page \"/share\" content created.";
+        drupal_set_message($msg);
+        return true;
+    }
+
+
+    /**
+     * Create Privacy Policy page.
+     *   Content originally from:  https://privacypolicytemplate.net
+     */
+    function fdvegan_initial_privacy_policy_load() {
+        global $user;
+        global $base_url;
+
+        drupal_lookup_path('wipe', 'share');  // clear cache
+        if (drupal_lookup_path('source', 'privacy-policy')) {
+            $link = l('delete it', 'admin/content');
+            $msg = "Privacy-Policy page \"/privacy-policy\" already exists. Please {$link} before attempting to Create Initial Content.";
+            drupal_set_message($msg, 'warning');
+            return false;
+        }
+
+        $node = new stdClass();
+        $node->title    = 'Privacy Policy';
+        $node->type     = 'page';
+        $node->language = 'en';  // LANGUAGE_NONE; or 'en' if locale is enabled
+        $node->path     = array(
+                                'alias'    => 'privacy-policy',
+                                'pid'      => null,
+                                'source'   => null,
+                                'language' => 'en',
+                                'pathauto' => 1,
+                               );
+        node_object_prepare($node); // Sets some defaults. Invokes hook_prepare() and hook_node_prepare().
+        $node->uid     = $user->uid; 
+        $node->status  = 1;  //(1 or 0): published or not
+        $node->sticky  = 0;
+        $node->promote = 0;  //(1 or 0): promoted to front page
+        $node->comment = 1;  // 0 = comments disabled, 1 = read only, 2 = read/write
+
+        // Let's add standard body field
+        $field_langcode = field_language('node', $node, 'body');
+
+        $contact_link = l(t('contact us'),
+                            'contact'
+                         );
+
+        $content = <<<EOT
+<h1>Privacy Policy of Five Degrees of Vegan</h1>
+
+<p>Five Degrees of Vegan operates the {$base_url} website, which provides the SERVICE.</p>
+
+<p>This page is used to inform website visitors regarding our policies with the collection, use, and disclosure of Personal Information if anyone decided to use our Service, the Five Degrees of Vegan website.</p>
+
+<p>If you choose to use our Service, then you agree to the collection and use of information in relation with this policy. The Personal Information that we collect are used for providing and improving the Service. We will not use or share your information with anyone except as described in this Privacy Policy.</p>
+
+<h2>Information Collection and Use</h2>
+
+<p>For a better experience while using our Service, we may require you to provide us with certain personally identifiable information, including but not limited to your name and email address. The information that we collect will be used to contact or identify you.</p>
+
+<h2>Log Data</h2>
+
+<p>We want to inform you that whenever you visit our Service, we collect information that your browser sends to us that is called Log Data. This Log Data may include information such as your computer’s Internet Protocol ("IP") address, browser version, pages of our Service that you visit, the time and date of your visit, the time spent on those pages, and other statistics.</p>
+
+<h2>Cookies</h2>
+
+<p>Cookies are files with a small amount of data that is commonly used as an anonymous unique identifier. These are sent to your browser from the website that you visit and are stored on your computer’s hard drive.</p>
+
+<p>Our website uses these "cookies" to collect information and to improve our Service. You have the option to either accept or refuse these cookies, and know when a cookie is being sent to your computer. If you choose to refuse our cookies, you may not be able to use some portions of our Service.</p>
+
+<h2>Service Providers</h2>
+
+<p>We may employ third-party companies and individuals for the following reasons:</p>
+
+<ul>
+    <li>To facilitate our Service;</li>
+    <li>To provide the Service on our behalf;</li>
+    <li>To perform Service-related services; or</li>
+    <li>To assist us in analyzing how our Service is used.</li>
+</ul>
+
+<p>We want to inform our Service users that these third parties have access to your Personal Information. The reason is to perform the tasks assigned to them on our behalf. However, they are obligated not to disclose or use the information for any other purpose.</p>
+
+<h2>Security</h2>
+
+<p>We value your trust in providing us your Personal Information, thus we are striving to use commercially acceptable means of protecting it. But remember that no method of transmission over the internet, or method of electronic storage is 100% secure and reliable, and we cannot guarantee its absolute security.</p>
+
+<h2>Links to Other Sites</h2>
+
+<p>Our Service may contain links to other sites. If you click on a third-party link, you will be directed to that site. Note that these external sites are not operated by us. Therefore, we strongly advise you to review the Privacy Policy of these websites. We have no control over, and assume no responsibility for the content, privacy policies, or practices of any third-party sites or services.</p>
+
+<h2>Children’s Privacy</h2>
+
+<p>Our Services do not address anyone under the age of 13. We do not knowingly collect personal identifiable information from children under 13. In the case we discover that a child under 13 has provided us with personal information, we immediately delete this from our servers. If you are a parent or guardian and you are aware that your child has provided us with personal information, please contact us so that we may take necessary action.</p>
+
+<h2>Changes to This Privacy Policy</h2>
+
+<p>We may update our Privacy Policy from time to time. Thus, we advise you to review this page periodically for any changes. We will notify you of any changes by posting the new Privacy Policy on this page. These changes are effective immediately, after they are posted on this page.</p>
+
+<h2>Contact Us</h2>
+
+<p>If you have any questions or suggestions about our Privacy Policy, do not hesitate to {$contact_link}.</p>
+EOT;
+
+        $node->body[$field_langcode][0]['value']   = $content;  // main body content
+//        $node->body[$field_langcode][0]['summary'] = text_summary($content);
+        $node->body[$field_langcode][0]['format']  = 'full_html';  // filter_default_format(), filtered_html, full_html, plain_text, or php_code
+
+        $node = node_submit($node);  // Prepare node for saving
+        node_save($node);
+
+        // Note - unlike some other pages, the Privacy-Policy page has no menu link.
+
+        // Add a message for the user to see:
+        $msg = "Privacy-Policy page \"/privacy-policy\" content created.";
+        drupal_set_message($msg);
+        return true;
+    }
+
+
+    /**
+     * Display output for "Actor List"
+     *
+     * Display a list of matching actors in our database.
+     */
+    function fdvegan_actor_list() {
+        $loadPersonsByFullName = FALSE;
+        $options = array();
+        $url_params = drupal_get_query_parameters();
+        if (is_array($url_params)) {
+            if (array_key_exists('full_name', $url_params)) {
+                $options['FullName'] = urldecode($url_params['full_name']);
+                $loadPersonsByFullName = TRUE;
+            }
+            if (array_key_exists('start', $url_params)) {
+                $options['Start'] = urldecode($url_params['start']);
+            }
+            if (array_key_exists('limit', $url_params)) {
+                $options['Limit'] = urldecode($url_params['limit']);
+            }
+        }
+        try {
+            $person_collection = new fdvegan_PersonCollection($options);
+            if ($loadPersonsByFullName) {
+                $person_collection->loadPersonsByFullName();
+            } else {
+                $person_collection->loadPersonsArray();
+            }
+        }
+        catch (FDVegan_NotFoundException $e) {  // No matching persons found
+            return fdvegan_Content::getActorNotFoundContent($options);
+        }
+        catch (Exception $e) {
+            fdvegan_Content::syslog('LOG_ERR', 'error in fdvegan_PersonCollection() with options provided: ' . print_r($options,1));
+            return fdvegan_Content::getSystemErrorContent($options);
+        }
+
+        $content = fdvegan_Content::getPersonCollectionContent($person_collection);
+
+        //
+        // Add the Actor Network visualization, if desired:
+        //
+        if (module_exists('fdvegan_rest_api')) {
+            if (user_access('use fdvegan') || fdvegan_Util::isEnvLTE('DEV')) {  // only particular users can see this new functionality
+                drupal_add_css(path_to_theme() . '/css/style_graph.css');
+                $content .= <<<EOT
+                    <input type="button" id="fdvegan_actor_network_btn"
+                     value="View All Actors Network"
+                     onclick="window.location='actor-network?degrees=1';" />
+EOT;
+            }
+        }
+
+        return $content;
+    }
+
+
+    /**
+     * Implementation of hook_form() for fdvegan_actor_form().
+     *
+     * Find actor by actor's name, then display output.
+     *  If actor is not in our DB, then load it from TMDb and store in our DB.
+     */
+    function fdvegan_actor_form($form, &$form_state) {
+        $url_params = drupal_get_query_parameters();
+        if (is_array($url_params) && array_key_exists('person_id', $url_params)) {
+            // Form is being submitted via a URL with params, so process it
+
+            $person_id = (int)$url_params['person_id'];
+            $options = array('PersonId' => $person_id);
+            $content = fdvegan_Content::getActorContent($options);
+
+            $form['submission'] = array(
+                '#markup' => $content,
+            );
+
+        } elseif (!empty($form_state['submitted'])) {
+            // Form has been successfully submitted, so process it
+
+            $full_name = trim($form_state['values']['full_name']);  // @TODO
+            $person_id = (int)$form_state['values']['person_id'];
+            $options = array('PersonId' => $person_id);
+            $content = fdvegan_Content::getActorContent($options);
+
+            $form['submission'] = array(
+                '#markup' => $content,
+            );
+
+        } else {
+            // Display the form
+
+            $display = array(
+                'textfield' => FALSE,
+                'selectize' => FALSE,
+                'chosen'    => FALSE,
+                'select'    => FALSE,
+            );
+            $detect = mobile_detect_get_object();
+// @TODO - finalize the access logic here
+            if (TRUE || user_is_logged_in() || $detect->isMobile()) {
+                // On mobile devices also show a text input box,
+                // since long select-boxes might not properly render as combo-boxes.
+                // Also could possibly use for non-registered users?  Or non-paying customers?
+                $display['textfield'] = TRUE;
+            }
+            if (module_exists('chosen')) {
+                $display['chosen'] = TRUE;
+            } else {
+                if (module_exists('selectize')) {
+                    $display['selectize'] = TRUE;
+                } else {
+                    $display['select'] = TRUE;
+                }
+            }
+
+            if ($display['textfield']) {
+                $form['intro'] = array(
+                    '#markup' => 'To find an actor or actress, enter their name here:<br />',
+                    '#weight' => 10,
+                );
+                $form['full_name'] = array('#type'          => 'textfield',
+                                           '#title'         => t('Full Name'),
+                                           '#default_value' => !empty($form->full_name) ? $form->full_name : '',
+                                           '#size'          => 28,
+                                           '#maxlength'     => 255,
+                                           '#required'      => !($display['selectize'] || $display['chosen'] || $display['select']),
+                                           '#description'   => t('Example: Natalie Portman'),
+                                           '#weight'        => 20,
+                                          );
+            }
+            if ($display['selectize'] || $display['chosen'] || $display['select']) {
+                $person_collection_options = array('PrependEmptyItem' => TRUE);
+                $person_collection = new fdvegan_PersonCollection();
+                $select_options = $person_collection->getMinPersonsArray($person_collection_options);
+                if (empty($form['intro'])) {
+                    $form['intro'] = array(
+                        '#markup' => 'To find an actor or actress, select their name here:<br />',
+                        '#weight' => 10,
+                    );
+                } else {
+                    $form['intro2'] = array(
+                        '#markup' => '<br />or, select their name here:<br />',
+                        '#weight' => 30,
+                    );
+                }
+                if ($display['selectize']) {
+                    $form['person_id'] = array('#type'          => 'selectize',
+                                               '#title'         => t('Actor’s Full Name'),
+                                               '#default_value' => !empty($form->full_name) ? $form->full_name : '',
+                                               '#required'      => !$display['textfield'],
+                                               '#weight'        => 40,
+                                               '#options'       => $select_options,
+                                               '#attributes'    => array('placeholder' => 'Select an actor',
+                                                                         'class' => array('fdvegan-selectize'),
+                                                                        ),
+                                               '#settings'      => selectize_default_settings(
+                                                   array(
+                                                         'create'           => TRUE,
+                                                         'maxItems'         => 1,
+                                                         'closeAfterSelect' => TRUE,
+                                                        )
+                                                   ),
+                                              );
+                }
+                if ($display['chosen'] || $display['select']) {
+                    /* Use regular select box,
+                     * or if Chosen module is enabled it will enhance this automatically.
+                     */
+                    $form['person_id'] = array('#type'          => 'select',
+                                               '#title'         => t('Actor’s Full Name'),
+                                               '#default_value' => !empty($form->full_name) ? $form->full_name : '',
+                                               '#required'      => !$display['textfield'],
+                                               '#weight'        => 40,
+                                               '#options'       => $select_options,
+                                               '#attributes'    => array('data-placeholder' => t('Choose an actor'),
+                                                                        ),
+                                              );
+                }
+            }
+            $form['submit'] = array('#type'   => 'submit',
+                                    '#value'  => t('Submit'),  // Search for Actor
+                                    '#weight' => 50,
+                                   );
+        }
+
+        return $form;
+    }
+
+
+    /**
+     * Validation handler for fdvegan_actor_form().
+     */
+    function fdvegan_actor_form_validate($form, &$form_state) {
+        if (array_key_exists('person_id', $form) &&
+            ((int)$form_state['values']['person_id'])) {  // no need to validate FullName if a good person_id exists
+            return TRUE;
+        }
+        if (array_key_exists('full_name', $form)) {
+            $form_state['values']['full_name'] = trim($form_state['values']['full_name']);
+            if (empty($form_state['values']['full_name'])) {
+                form_set_error('full_name', t('You must either type a name or select it'));
+                form_set_error('person_id');
+                return FALSE;
+            }
+            if (!is_string($form_state['values']['full_name'])) {
+                form_set_error('full_name', t('You must enter a valid person’s name'));
+                return FALSE;
+            }
+            if (!empty($form_state['values']['full_name']) &&
+                strlen($form_state['values']['full_name']) < 3) {
+                form_set_error('full_name', t('Name too short.  You must enter a valid person’s name'));
+                return FALSE;
+            }
+        }
+
+        return TRUE;
+    }
+
+
+    /**
+     * Submit handler for the fdvegan_actor form.
+     *
+     * @see fdvegan_actor_form()
+     */
+    function fdvegan_actor_form_submit($form, &$form_state) {
+
+        if (array_key_exists('person_id', $form_state['values']) &&
+            ((int)$form_state['values']['person_id'])) {
+            $person_id = $form_state['values']['person_id'];
+
+            // Since drupal forms build twice on submit, we'll reroute this form submit to use URL params instead,
+            // so our custom short-circuit code above will save us from rebuilding the entire slow form again on a
+            // user's potential future refresh/bookmark, and we'll keep the same nice "/actor" URL.
+            $options = array('query' => array('person_id' => $person_id));
+            drupal_goto('actor', $options);
+        }
+
+        //
+        // With no person_id, this must be a search by full_name.
+        //
+
+        // A lookup by FullName may return multiple matches,
+        // so we'll reroute to /actor-list to display a PersonCollection.
+        $full_name = $form_state['values']['full_name'];
+        $options = array('query' => array('full_name' => urlencode($full_name)));
+        drupal_goto('actor-list', $options);
+    }
+
+
+    /**
+     * Display output for "Actor Network"
+     *
+     * Display a "Hierarchical Edge Bundling" graph visualization of all actors.
+     */
+    function fdvegan_actor_network() {
+        $url_params = drupal_get_query_parameters();
+        if (!is_array($url_params) || !array_key_exists('degrees', $url_params)) {
+            //throw new FDVegan_InvalidArgumentException('No degree-level provided');
+            $degrees = 1;  // Default to 1 degree.
+        } else {
+            $degrees = (int)$url_params['degrees'];
+        }
+        $options = array('Degrees' => $degrees);
+        return fdvegan_Content::getActorNetworkContent($options);
+    }
+
+
+    /**
+     * Display output for "Actor Tree"
+     *
+     * Display an indented tree graph visualization of the actor,
+     * including all the standard HTML page output.
+     * See: self::fdvegan_actor_tree_only()
+     */
+    function fdvegan_actor_tree() {
+        $url_params = drupal_get_query_parameters();
+        if (!is_array($url_params) || !array_key_exists('person_id', $url_params)) {
+            fdvegan_Content::syslog('LOG_INFO', 'No actor provided');
+            return fdvegan_Content::getSystemErrorContent();
+        }
+        if (!array_key_exists('depth', $url_params)) {
+            fdvegan_Content::syslog('LOG_INFO', 'No depth provided');
+            return fdvegan_Content::getSystemErrorContent();
+        }
+        $options = array();
+        $options['Depth']    = (int)$url_params['depth'];
+        $options['PersonId'] = (int)$url_params['person_id'];
+        return fdvegan_Content::getActorTreeContent($options);
+    }
+
+    /**
+     * Display output for "Actor Tree-only"
+     *
+     * Display an indented tree graph visualization of the actor,
+     * with no other HTML output.
+     * See: self::fdvegan_actor_tree()
+     */
+    function fdvegan_actor_tree_only() {
+        $url_params = drupal_get_query_parameters();
+        if (!is_array($url_params) || !array_key_exists('person_id', $url_params)) {
+            throw new FDVegan_InvalidArgumentException('No actor provided');
+        }
+        if (!array_key_exists('depth', $url_params)) {
+            throw new FDVegan_InvalidArgumentException('No depth provided');
+        }
+        $options = array();
+        $options['Depth']    = (int)$url_params['depth'];
+        $options['PersonId'] = (int)$url_params['person_id'];
+        return fdvegan_Content::getActorTreeContentOnly($options);
+    }
+
+
+    /**
+     * Display output for "Movie List"
+     *
+     * Display a list of all matching movies in our database.
+     */
+    function fdvegan_movie_list() {
+        $loadMoviesByTitle = FALSE;
+        $options = array();
+        $options['Start'] = 0;
+        $options['Limit'] = 99;  // @TODO - implement paging someday, rather than hardcode to limit 99.
+        $url_params = drupal_get_query_parameters();
+        if (is_array($url_params)) {
+            if (array_key_exists('title', $url_params)) {
+                $options['Title'] = urldecode($url_params['title']);
+                $loadMoviesByTitle = TRUE;
+            }
+            if (array_key_exists('start', $url_params)) {
+                $options['Start'] = urldecode($url_params['start']);
+            }
+            if (array_key_exists('limit', $url_params)) {
+                $options['Limit'] = urldecode($url_params['limit']);
+            }
+        }
+        try {
+            $movie_collection = new fdvegan_MovieCollection($options);
+            if ($loadMoviesByTitle) {
+                $movie_collection->loadMoviesByTitle();
+            } else {
+                $movie_collection->loadMoviesArray();
+            }
+        }
+        catch (FDVegan_NotFoundException $e) {  // No matching movies found
+            return fdvegan_Content::getMovieNotFoundContent($options);
+        }
+        catch (Exception $e) {
+            fdvegan_Content::syslog('LOG_ERR', 'error in fdvegan_MovieCollection() with options provided: ' . print_r($options,1));
+            return fdvegan_Content::getSystemErrorContent($options);
+        }
+
+        return fdvegan_Content::getMovieCollectionContent($movie_collection);
+    }
+
+
+    /**
+     * Implementation of hook_form() for fdvegan_movie_form().
+     *
+     * Find movie by movie's title, then display output.
+     *  If movie is not in our DB, show error page.
+     */
+    function fdvegan_movie_form($form, $form_state) {
+        $url_params = drupal_get_query_parameters();
+        if (is_array($url_params) && array_key_exists('movie_id', $url_params)) {
+            // Form is being submitted via a URL with params, so process it
+
+            $movie_id = (int)$url_params['movie_id'];
+            $options = array('MovieId' => $movie_id);
+            $content = fdvegan_Content::getMovieContent($options);
+
+            $form['submission'] = array(
+                '#markup' => $content,
+            );
+
+        } elseif (!empty($form_state['submitted'])) {
+            // Form has been successfully submitted, so process it
+
+            $title = trim($form_state['values']['title']);  // @TODO
+            $movie_id = (int)$form_state['values']['movie_id'];
+            $options = array('MovieId' => $movie_id);
+            $content = fdvegan_Content::getMovieContent($options);
+
+            $form['submission'] = array(
+                '#markup' => $content,
+            );
+
+        } else {
+            // Display the form
+
+            $display = array(
+                'textfield' => FALSE,
+                'selectize' => FALSE,
+                'chosen'    => FALSE,
+                'select'    => FALSE,
+            );
+            $detect = mobile_detect_get_object();
+// @TODO - finalize the access logic here
+            if (TRUE || user_is_logged_in() || $detect->isMobile()) {
+                // On mobile devices also show a text input box,
+                // since long select-boxes might not properly render as combo-boxes.
+                // Also could possibly use for non-registered users?  Or non-paying customers?
+                $display['textfield'] = TRUE;
+            }
+            if (module_exists('chosen')) {
+                $display['chosen'] = TRUE;
+            } else {
+                if (module_exists('selectize')) {
+                    $display['selectize'] = TRUE;
+                } else {
+                    $display['select'] = TRUE;
+                }
+            }
+
+            if ($display['textfield']) {
+                $form['intro'] = array(
+                    '#markup' => 'To find a movie, enter its title here.<br />',
+                    '#weight' => 10,
+                );
+                $form['title'] = array('#type'          => 'textfield',
+                                       '#title'         => t('Title'),
+                                       '#default_value' => !empty($form->title) ? $form->title : '',
+                                       '#size'          => 40,
+                                       '#maxlength'     => 255,
+                                       '#required'      => !($display['selectize'] || $display['chosen'] || $display['select']),
+                                       '#description'   => t("Example: Pulp Fiction"),
+                                       '#weight'        => 20,
+                                      );
+            }
+            if ($display['selectize'] || $display['chosen'] || $display['select']) {
+                $movies_collection = new fdvegan_MovieCollection();
+                $select_options = $movies_collection->getMinMoviesArray();
+                if (empty($form['intro'])) {
+                    $form['intro'] = array(
+                        '#markup' => 'To find a movie, select its title here:<br />',
+                        '#weight' => 10,
+                    );
+                } else {
+                    $form['intro2'] = array(
+                        '#markup' => '<br />or, select its title here:<br />',
+                        '#weight' => 30,
+                    );
+                }
+                if ($display['selectize']) {
+                    $form['movie_id'] = array('#type'          => 'selectize',
+                                              '#title'         => t('Movie’s Title'),
+                                              '#default_value' => !empty($form->title) ? $form->title : '',
+                                              '#required'      => !$display['textfield'],
+                                              '#weight'        => 40,
+                                              '#options'       => $select_options,
+                                              '#attributes'    => array('placeholder' => 'Select a movie',
+                                                                        'class' => array('fdvegan-selectize'),
+                                                                       ),
+                                              '#settings'      => selectize_default_settings(
+                                                  array(
+                                                        'create'           => TRUE,
+                                                        'maxItems'         => 1,
+                                                        'closeAfterSelect' => TRUE,
+                                                       )
+                                                  ),
+                                             );
+                }
+                if ($display['chosen'] || $display['select']) {
+                    /* Use regular select box,
+                     * or if Chosen module is enabled it will enhance this automatically.
+                     */
+                    $form['movie_id'] = array('#type'          => 'select',
+                                              '#title'         => t('Movie’s Title'),
+                                              '#default_value' => !empty($form->title) ? $form->title : '',
+                                              '#required'      => !$display['textfield'],
+                                              '#weight'        => 40,
+                                              '#options'       => $select_options,
+                                              '#attributes'    => array('data-placeholder' => t('Choose a movie'),
+                                                                       ),
+                                             );
+                }
+            }
+            $form['submit'] = array('#type'  => 'submit',
+                                    '#value' => t('Submit'),  // Search for Movie
+                                    '#weight' => 50,
+                                   );
+        }
+
+        return $form;
+    }
+
+
+    /**
+     * Validation handler for fdvegan_movie_form().
+     */
+    function fdvegan_movie_form_validate($form, &$form_state) {
+        if (array_key_exists('movie_id', $form) &&
+            ((int)$form_state['values']['movie_id'])) {  // no need to validate Title if a good movie_id exists
+            return TRUE;
+        }
+        if (array_key_exists('title', $form)) {
+            $form_state['values']['title'] = trim($form_state['values']['title']);
+            if (empty($form_state['values']['title'])) {
+                form_set_error('title', t('You must either type a title or select it'));
+                form_set_error('movie_id');
+                return FALSE;
+            }
+            if (!is_string($form_state['values']['title'])) {
+                form_set_error('title', t('You must enter a valid movie title'));
+                return FALSE;
+            }
+            if (!empty($form_state['values']['title']) &&
+                strlen($form_state['values']['title']) < 2) {
+                form_set_error('title', t('Title too short.  You must enter a valid movie title'));
+                return FALSE;
+            }
+        }
+
+        return TRUE;
+    }
+
+
+    /**
+     * Submit handler for the fdvegan_movie form.
+     *
+     * @see fdvegan_movie_form()
+     */
+    function fdvegan_movie_form_submit($form, &$form_state) {
+
+        if (array_key_exists('movie_id', $form_state['values']) &&
+            ((int)$form_state['values']['movie_id'])) {
+            $movie_id = $form_state['values']['movie_id'];
+
+            // Since drupal forms build twice on submit, we'll reroute this form submit to use URL params instead,
+            // so our custom short-circuit code above will save us from rebuilding the entire slow form again on a
+            // user's potential future refresh/bookmark, and we'll keep the same nice "/movie" URL.
+            $options = array('query' => array('movie_id' => $movie_id));
+            drupal_goto('movie', $options);
+        }
+
+        //
+        // With no movie_id, this must be a search by title.
+        //
+
+        // A lookup by Title may return multiple matches,
+        // so we'll reroute to /movie-list to display a MovieCollection.
+        $title = $form_state['values']['title'];
+        $options = array('query' => array('title' => urlencode($title)));
+        drupal_goto('movie-list', $options);
+    }
+
+
+    /**
+     * Implementation of view for fdvegan_game_view().
+     */
+    function fdvegan_game_view($arg1 = '', $arg2 = '') {
+        drupal_set_title(t('Play the ') . '5[degree]V' . t(' Game'));  // Play the 5°V Game
+        $file = variable_get('file_public_path', conf_path() . '/files') . '/game-instructions.html';
+        $instructions_link = l(t('Click here for a printable version of the game rules'),
+                               $file,
+                               array('attributes' => array('target'=>'_blank'),
+                                     //'query' => array('a' => 1),  // URL param "a=1" means data-only ajax.
+                                    )
+                              );
+        $all_actors_link = l(t('All Actors'),
+                               'actor-list'
+                            );
+        $actor_search_link = l(t('Actor Search'),
+                                 'actor'
+                              );
+        $movie_search_link = l(t('Movie Search'),
+                                 'movie'
+                              );
+        $contact_link = l(t('Contact Us'),
+                            'contact'
+                         );
+        $content = <<<EOT
+<span class="fdv-brand-text">5&deg; Vegan</span> is a trivia game that tests your knowledge about vegan actors and their movie connections, otherwise known as degrees of separation.  If two actors are in the same movie, that’s one degree; a new actor that worked with one of them in another movie makes a second degree of separation.  Players continue finding connections until they can prove the link between two predetermined vegan actors through no greater than five degrees.  You can play the <span class="fdv-brand-text">5&deg; Vegan</span> game by using your mobile device/computer, or you can prepare and print out some materials in advance to play the game offline with your friends.<br />
+<br />
+Start by familiarizing yourself with the basic rules of the game.  We also have some fun variations you might like to try once you’re a <span class="fdv-brand-text">5&deg; Vegan</span> expert!<br />
+{$instructions_link}.<br />
+<br />
+Once you know how everything works, you can begin finding some <span class="fdv-brand-text">5&deg; Vegan</span> connections using this website.  Here’s a quick example to get you started:
+<br />
+First choose two vegan actors from memory or the &ldquo;{$all_actors_link}&rdquo; or &ldquo;{$actor_search_link}&rdquo; links.  Next, start finding the degrees of separation between them by connecting them through their work, from memory or the &ldquo;{$movie_search_link}&rdquo; link.<br />
+<br />
+When you think you have it, share out loud or write down your question and final answer like this:<br />
+<div class="fdv-paper fdv-handwritten">
+  &ldquo;Natalie Portman and Michelle Pfeiffer are 3&deg; apart.  Who are the two connecting actors?&rdquo;
+  &ldquo;Natalie Portman → Zoolander → Ben Stiller → Along Came Polly → Alec Baldwin → Married to the Mob → Michelle Pfeiffer&rdquo;
+</div>
+<br />
+Finally, if you want to get more detailed, write down or print out any other hint information you’d like to play with, depending on the players’, skill level, e.g.: actors’ generic photos, movie release dates, actor’s characters’ names (and if lead/supporting), and actors’ character photos.<br />
+<br />
+Now you’re on your way to becoming a real <span class="fdv-brand-text">5&deg; Vegan</span> master!<br />
+<br />
+We’d love to hear from you about your experience.  {$contact_link} if you have any questions, comments, or concerns about the website, game, or anything else you have on your mind about <span class="fdv-brand-text">5&deg; Vegan</span>.
+EOT;
+
+        return $content;
+    }
+
+
+    /**
+     * Implementation of view for fdvegan_play_view().
+     */
+    function fdvegan_play_view($arg1 = '', $arg2 = '') {
+        $options = array('Degrees'          => 1,
+                         'Difficulty'       => 1,
+                         'Round'            => 1,
+                         'SecondsPerDegree' => 120,
+                         'SecondsRemainingInRound' => 120 * 1,
+                   );
+        drupal_set_title(t('Play the ') . '5[degree]V' . t(' Game'));  // Play the 5°V Game
+        return fdvegan_Content::getPlayGameContent($options);
+    }
+
+
+    /**
+     * Implementation of view for fdvegan_debug_view().
+     */
+    function fdvegan_debug_view($arg1 = '', $arg2 = '') {
+        drupal_set_title(t('Debug Page'));
+        $content = 'Debugging info from '.basename(__FILE__).'::'.__METHOD__.'():<br /><br />';
+
+        $content .= "Nothing here at the moment.";
+        $content .= "<br /><br />";
+
+        if (0) {
+            // List all existing permissions.
+            $content .= "<pre>";
+            foreach (module_list(FALSE, FALSE, TRUE) as $module) {
+                $content .= print_r($module,1);
+                if ($permissions = module_invoke($module, 'permission')) {
+                    $content .= print_r($permissions,1);
+                }
+            }
+            $content .= "</pre>";
+        }
+
+        if (0) {
+            // List all persons and their veg*n tag.
+            $options = array('HavingTmdbId' => TRUE,  // No sense in trying to load any actors not in TMDb.
+                             'HavingTags'   => array('vegan', 'vegetarian'),
+                            );
+            $person_collection = new fdvegan_PersonCollection($options);
+            $person_collection->loadPersons();  // load every actor in our DB
+            echo "<pre>\n";
+            foreach ($person_collection as $person) {
+                echo "FullName={$person->fullName}, vtag={$person->getVegTagName()}.<br />\n";
+            }
+            echo "</pre>\n";
+        }
+
+        if (0) {
+            // Initialize the known process_status entries.
+            $sql = <<<__SQL__
+        INSERT INTO {fdvegan_process_status} 
+          (process_name, status, verbose_status, created) VALUES 
+          ('CALC_DEGREES', 'READY', 'Ready to initialize; has not been run yet.', CURRENT_TIMESTAMP)
+__SQL__;
+            $result = db_query($sql);
+        }
+
+        if (0) {
+            $name = "Émile";
+            $name2 = iconv("UTF-8", "ASCII//TRANSLIT//IGNORE", $name);  // Remove any accented characters.
+            $name3 = mb_ereg_replace('É', 'E', $name);
+            $name3 = iconv("UTF-8", "ASCII//TRANSLIT//IGNORE", $name3);  // Remove any accented characters.
+            $name4 = mb_convert_encoding($name, 'ASCII');
+            echo "<pre>\n";
+            echo "name={$name}.\n";
+            echo "name2={$name2}.\n";
+            echo "name3={$name3}.\n";
+            echo "name4={$name4}.\n";
+            echo "</pre>\n";
+        }
+
+        if (0) {
+            // Test scraping a movie image from TMDb.
+            $options = array('MovieId' => 2818);
+            $movie = new fdvegan_Movie($options);
+            $content .= "<pre>\n";
+            $content .= 'tmdbImagePath=' . print_r($movie->getTmdbImagePath(), 1) . '<br /><br />';
+            $content .= "</pre>\n";
+
+            $movie->setRefreshFromTmdb(TRUE);
+            $movie->setScrapeFromTmdb(TRUE);
+
+            $movieImages = $movie->getMovieImages();
+            $movieImage = $movieImages['m'][0];
+            $content .= "<pre>\n";
+            $content .= print_r($movieImage, 1) . '<br /><br />';
+            $content .= "</pre>\n";
+
+            $imagePath = $movie->getImagePath();
+            $content .= "<pre>\n";
+            $content .= print_r($imagePath, 1) . '<br /><br />';
+            $content .= "</pre>\n";
+        }
+
+//        $content .= fdvegan_Util::pinfo() . '<br /><br />';
+
+        return $content;
+    }
+
+
+    /**
+     * Implementation of view for fdvegan_initial_content_load_view().
+     */
+    function fdvegan_initial_content_load_view($arg1 = '', $arg2 = '') {
+        drupal_set_title(t('Initial Content Load'));
+
+        /* Create Front Page content */
+        if (fdvegan_initial_front_page_load() &&
+            fdvegan_initial_about_load() &&
+            fdvegan_initial_faq_load() &&
+            fdvegan_initial_how_help_load() &&
+            fdvegan_initial_special_thanks_load() &&
+            fdvegan_initial_share_us_load() &&
+            fdvegan_initial_privacy_policy_load()
+           ) {
+            $content = 'Initial content created successfully.';
+        } else {
+            $content = 'Could not create all initial content.';
+        }
+
+        return $content;
+    }
+
+
+    /**
+     * Implementation of hook_form() for fdvegan_actor_load_form().
+     * Admin page for "Load Actor"
+     *
+     * Find actor by actor's name, then display output.
+     *  If actor TMDb info is not in our DB, then load it from TMDb and store in our DB.
+     *
+     *  Note - the actor must already have a minimal record in our DB for
+     *         anything to process (see fdvegan_actor_load_new())
+     */
+    function fdvegan_actor_load_form($form, &$form_state) {
+        $url_params = drupal_get_query_parameters();
+        if (is_array($url_params) && array_key_exists('person_id', $url_params)) {
+            // Form is being submitted via a URL with params, so process it
+
+            $person_id = $url_params['person_id'];
+            $options = array('PersonId'        => $person_id,
+                             'RefreshFromTmdb' => TRUE,  // actually do the load work
+                            );
+            $content = fdvegan_Content::loadActorContent($options);
+
+            $form['submission'] = array(
+                '#markup' => $content,
+            );
+
+        } elseif (!empty($form_state['values']['full_name'])) {
+            // Form has been successfully submitted, so process it
+
+            $full_name = $form_state['values']['full_name'];
+            $options = array('FullName'        => $full_name,
+//                             'RefreshFromTmdb' => TRUE,
+                            );
+            $content = fdvegan_Content::loadActorContent($options);
+
+            $form['submission'] = array(
+                '#markup' => $content,
+            );
+
+        } else {
+            // Display the form
+
+            if (false) {
+                // Possibly use for non-registered users?  Or non-paying customers?
+                $form['intro'] = array(
+                    '#markup' => 'This is an Admin page where you can search for an existing actor in the database, then if no TMDB info exists yet, it will be loaded and also stored in our database.<br />',
+                    '#weight' => 10,
+                );
+                $form['person_id'] = array('#type'          => 'hidden',
+                                           '#default_value' => '',
+                                           '#value'         => '',
+                                           '#weight'        => 20,
+                                          );
+                $form['full_name'] = array('#type'          => 'textfield',
+                                           '#title'         => t('Full Name'),
+                                           '#default_value' => !empty($form->full_name) ? $form->full_name : '',
+                                           '#size'          => 32,
+                                           '#maxlength'     => 255,
+                                           '#required'      => TRUE,
+                                           '#description'   => t('Example: Natalie Portman'),
+                                           '#weight'        => 30,
+                                          );
+            } else {
+                $person_collection_options = array('PrependEmptyItem' => TRUE);
+                $persons_collection = new fdvegan_PersonCollection();
+                $select_options = $persons_collection->getMinPersonsArray($person_collection_options);
+                $form['intro'] = array(
+                    '#markup' => 'This is an Admin page where you can search for an existing actor in the database, then if no TMDB info exists yet, it will be loaded and also stored in our database.<br />',
+                    '#weight' => 10,
+                );
+                $form['person_id'] = array('#type'          => 'select',
+                                           '#title'         => t('Actor’s Full Name'),
+                                           '#default_value' => !empty($form->full_name) ? $form->full_name : '',
+//                                           '#required'      => FALSE,
+                                           '#weight'        => 20,
+                                           '#options'       => $select_options,
+                                          );
+                $form['full_name'] = array('#type'          => 'textfield',
+                                           '#title'         => t('Full Name'),
+                                           '#default_value' => !empty($form->full_name) ? $form->full_name : '',
+                                           '#size'          => 32,
+                                           '#maxlength'     => 255,
+//                                           '#required'      => FALSE,
+                                           '#description'   => t('Example: Natalie Portman'),
+                                           '#weight'        => 30,
+                                          );
+            }
+
+            $form['submit'] = array('#type'   => 'submit',
+                                    '#value'  => t("Load Actor’s TMDB Info"),
+                                    '#weight' => 50,
+                                   );
+        }
+
+        return $form;
+    }
+
+
+    /**
+     * Validation handler for fdvegan_actor_load_form().
+     */
+    function fdvegan_actor_load_form_validate($form, &$form_state) {
+        // print "\n<br /><br />DEBUG(".__FILE__."):<br />\n<pre>" . print_r($form_state['values'],1) . "</pre>\n";  die();
+        if (empty((int)$form_state['values']['person_id'])) {  // no need to validate FullName if a good person_id exists
+            if (!is_string($form_state['values']['full_name'])) {
+                form_set_error('full_name', t('You must enter a valid person’s name'));
+                return FALSE;
+            }
+            $form_state['values']['full_name'] = trim($form_state['values']['full_name']);
+            if (strlen($form_state['values']['full_name']) < 3) {
+                form_set_error('full_name', t('Name too short.  You must enter a valid person’s name.'));
+                return FALSE;
+            }
+        }
+        return TRUE;
+    }
+
+
+    /**
+     * Submit handler for the fdvegan_actor_load form.
+     *
+     * @see fdvegan_actor_load_form()
+     */
+    function fdvegan_actor_load_form_submit($form, &$form_state) {
+
+        // @TODO - the line below currently works since there's always a select drop-down, but if/when
+        //         that changes, we'll need to actually lookup the person_id by FullName here.
+        $person_id = $form_state['values']['person_id'];
+
+        // Since drupal forms build twice on submit, we'll reroute this form submit to use URL params instead,
+        // so our custom short-circuit code above will save us from rebuilding the entire slow form again on a
+        // user's potential future refresh/bookmark, and we'll keep the same nice "/actor" URL.
+        $options = array('query' => array('person_id' => $person_id));
+        drupal_goto('actor-load', $options);
+}
+
+
+    /**
+     * Implementation of hook_form() for fdvegan_init_load_form().
+     * Admin page for "Init Load"
+     *
+     * Load all actors and movies from the TMDb API and store in our DB.
+     *
+     *  Note - the actor must already have a minimal record in our DB for
+     *         anything to process (see fdvegan_actor_load_new())
+     */
+    function fdvegan_init_load_form($form, &$form_state) {
+
+        $url_params = drupal_get_query_parameters();
+        if (is_array($url_params) && !empty($form_state['values']['init_all'])) {
+            // Form is being submitted via a URL with params, so process it
+
+            $all_actors_link = l(t('all known vegan actors'),
+                                 'actor-list'
+                                );
+            $content = 'Database initialization process complete.<br /><br />' .
+                       'You may now view '. $all_actors_link .' and movies.';
+
+            $form['complete'] = array('#markup' => $content);
+
+        } else {
+            // Display the form
+
+            $form['intro'] = array(
+                '#markup' => "This is an Admin page where you can initially load all data for the existing actors in the database.<br /><br />This process <strong>takes about 2 hours to complete</strong>.<br />Do not navigate away from the webpage or else you will have to restart this process again.<br /><br />This batch process is safe to re-run multiple times, although it should not be necessary to unless you expect there is new data on TMDb that you would like to extract.<br /><br />",
+            );
+            $form['init_all'] = array('#type'  => 'hidden',
+                                      '#value' => '1',
+                                     );
+            $form['submit'] = array('#type'  => 'submit',
+                                    '#value' => t('Reload all Actors and Movies from TMDb'),
+                                   );
+        }
+
+        return $form;
+    }
+
+
+    /**
+     * Submit handler for the fdvegan_init_load form.
+     *
+     * @see fdvegan_init_load_form()
+     */
+    function fdvegan_init_load_form_submit($form, &$form_state) {
+        $form_state['rebuild'] = TRUE;
+
+        // Need to clear any existing cached person data.  See fdvegan_PersonCollection::getMinPersonsArray()
+        variable_set('fdvegan_min_persons_array', NULL);  // Clear any existing cached person data.
+        // Need to clear any existing cached movie data.  See fdvegan_MovieCollection::getMinMoviesArray()
+        variable_set('fdvegan_min_movies_array', NULL);  // Clear any existing cached movie data.
+
+        module_load_include('php', 'fdvegan', 'fdvegan_batch_process');
+        fdvegan_init_load_batch();
+    }
+
+
+    /**
+     * Implementation of hook_form() for fdvegan_recalculate_degrees_form().
+     * Admin page for "Recalculate Degrees"
+     *
+     * Re-index all 5-degree data connections for the Actor Network graph and store in our DB.
+     */
+    function fdvegan_recalculate_degrees_form($form, &$form_state) {
+
+        $url_params = drupal_get_query_parameters();
+        if (is_array($url_params) && !empty($form_state['values']['recalc_all'])) {
+            // Form is being submitted via a URL with params, so process it
+
+            $all_actors_link = l(t('All Actors Network'),
+                                 'actor-network'
+                                );
+            $content = 'Degree-recalculation process complete.<br /><br />' .
+                       'You may now view the '. $all_actors_link . '.';
+
+            $form['complete'] = array('#markup' => $content);
+
+        } else {
+            // Display the form
+
+            $form['intro'] = array(
+                '#markup' => "This is an Admin page where you can re-index all 5&deg; data connections for the Actor Network graph data in the database.<br /><br />This process <strong>takes about 10 minutes to calculate the first 3&deg;</strong>'s and then another hour for 4&deg;, and 6+ hours for the final 5&deg;.<br />Do not navigate away from the webpage during calculation of the first 3&deg; or else you will have to restart this process again.  Once the 4&deg; calculations are successfully started, you may navigate away and the calculations will continue where they left off the next time you restart this process.<br /><br />This batch process is safe to re-run multiple times, although it should not be necessary to unless you expect there is new data in the FDV database that you would like to re-index.<br /><br />",
+            );
+            $form['recalc_all'] = array('#type'  => 'hidden',
+                                      '#value' => '1',
+                                     );
+            $form['submit'] = array('#type'  => 'submit',
+                                    '#value' => t('Recalculate all actor connections'),
+                                   );
+        }
+
+        return $form;
+    }
+
+
+    /**
+     * Submit handler for the fdvegan_recalculate_degrees form.
+     *
+     * @see fdvegan_recalculate_degrees_form()
+     */
+    function fdvegan_recalculate_degrees_form_submit($form, &$form_state) {
+        $form_state['rebuild'] = TRUE;
+
+        module_load_include('php', 'fdvegan', 'fdvegan_batch_process');
+        fdvegan_recalculate_degrees_batch();
+    }
+
+
+    /**
+     * Implementation of hook_form() for fdvegan_scrape_media_form().
+     * Admin page for "Scrape Media"
+     *
+     * Scrapes all actor and movie images from the TMDb website and stores on our filesystem.
+     *
+     *  Note - the actors & movies must already have full records in our DB for
+     *         anything to scrape.
+     */
+    function fdvegan_scrape_media_form($form, &$form_state) {
+
+        $url_params = drupal_get_query_parameters();
+        if (is_array($url_params) && !empty($form_state['values']['init_all'])) {
+            // Form is being submitted via a URL with params, so process it
+
+            $all_actors_link = l(t('all known vegan actors'),
+                                 'actor-list'
+                                );
+            $content = 'Scrape-media process complete.<br /><br />' .
+                       'You may now view '. $all_actors_link .' and movies.';
+
+            $form['complete'] = array('#markup' => $content);
+
+        } else {
+            // Display the form
+
+            $form['intro'] = array(
+                                   '#markup' => "This is an Admin page where you can scrape all images for existing actors and movies in the database.<br /><br />This process <strong>may take 13 hours to complete</strong>.<br />The actor images take up 250 MB disk space and the movie images take 11 GB, so make sure you have at least 12 GB disk space free.<br /><br />This batch process is safe to re-run multiple times, although it should not be necessary to unless you expect there are new images on TMDb that you would like to copy.<br /><br />",
+                                   '#weight' => 10,
+            );
+            $form['scrape_type'] = array('#type'          => 'radios',
+                                         '#title'         => t('What images to scrape'),
+                                         '#required'      => TRUE,
+                                         '#description'   => '&nbsp;',
+                                         '#options'       => array(
+                                                                   'persons' => t('Actors-only &nbsp; <span class="small">250 MB space needed; takes 20 minutes</span>'),
+                                                                   'movies'  => t('Movies-only &nbsp; <span class="small">11 GB space needed; takes 8-13 hours</span>'),
+                                                                   'both'    => t('Both actors and movies &nbsp; <span class="small">12 GB space needed; takes 9-14 hours</span>'),
+                                                                  ),
+                                         '#default_value' => 'both',
+                                         '#weight'        => 20,
+                                         );
+            $form['submit'] = array('#type'   => 'submit',
+                                    '#value'  => t('Begin Scraping Images from TMDb'),
+                                    '#weight' => 30,
+                                   );
+        }
+
+        return $form;
+    }
+
+
+    /**
+     * Submit handler for the fdvegan_scrape_media form.
+     *
+     * @see fdvegan_init_load_form()
+     */
+    function fdvegan_scrape_media_form_submit($form, &$form_state) {
+        $form_state['rebuild'] = TRUE;
+
+        // First, create the FDVegan TMDB public file directories, if they don't already exist.
+        $ret = fdvegan_Media::install_create_dirs();
+        if (($ret !== 2) && ($ret !== TRUE)) {
+            $msg = 'Could not create TMDb directories and/or files.';
+            drupal_set_message($msg);
+            return true;
+        }
+
+        module_load_include('php', 'fdvegan', 'fdvegan_batch_process');
+        fdvegan_scrape_media_batch($form_state['values']['scrape_type']);
+    }
+
+
+    /**
+     * Implementation of hook_form() for fdvegan_copy_local_media_form().
+     * Admin page for "Copy Local Media"
+     *
+     * Copy all scraped actor and movie images already on our filesystem to a second backup-type dir.
+     */
+    function fdvegan_copy_local_media_form($form, &$form_state) {
+
+        $url_params = drupal_get_query_parameters();
+        if (is_array($url_params) && !empty($form_state['values']['init_all'])) {
+            // Form is being submitted via a URL with params, so process it
+
+            $content = 'Copy-local--media process complete.';
+
+            $form['complete'] = array('#markup' => $content);
+
+        } else {
+            // Display the form
+
+            $form['intro'] = array(
+                                   '#markup' => "This is an Admin page where you can copy all scraped images for existing actors and connected-movies already on the local filesystem to a more human-friendly readable filename format in a separate external dir.<br /><br />This process <strong> takes ~3 minutes to complete</strong>.<br />The images take up another 500 MB, so make sure you have at least 500 MB more disk space free.<br /><br />This batch process is safe to re-run multiple times, although it should not be necessary to unless you expect there are new images on the filesystem that you would like to copy.<br /><br />",
+                                   '#weight' => 10,
+            );
+            $form['submit'] = array('#type'   => 'submit',
+                                    '#value'  => t('Begin Copying Local Images'),
+                                    '#weight' => 30,
+                                   );
+        }
+
+        return $form;
+    }
+
+
+    /**
+     * Submit handler for the fdvegan_copy_local_media form.
+     *
+     * @see fdvegan_init_load_form()
+     */
+    function fdvegan_copy_local_media_form_submit($form, &$form_state) {
+        $form_state['rebuild'] = TRUE;
+
+        // First, create the FDVegan TMDB public file directories, if they don't already exist.
+        $ret = fdvegan_Media::install_create_dirs();
+        if (($ret !== 2) && ($ret !== TRUE)) {
+            $msg = 'Could not create TMDb directories and/or files.';
+            drupal_set_message($msg);
+            return true;
+        }
+
+        module_load_include('php', 'fdvegan', 'fdvegan_batch_process');
+        fdvegan_copy_local_media_batch();
+    }
+
+
+    /**
+     * Display output for "Find Connection"
+     * User enters Actor #1's name and Actor #2's name.
+     */
+    function fdvegan_find_connection() {
+        header('Content-type: text/plain; charset=UTF-8');
+        header('Content-Disposition: inline');
+
+        $content = '';
+        $given_names = array();
+        $given_names[] = 'Natalie Portman';
+        $given_names[] = 'Danny DeVito';
+
+        $persons = array();
+        $degree_opts = array();
+        foreach ($given_names as $name) {
+            $person_opts = array('FullName' => $name);
+            try {
+                $person = new fdvegan_Person($person_opts);
+            }
+            catch (FDVegan_NotFoundException $e) {  // No person found
+                return fdvegan_Content::getActorNotFoundContent($person_opts);
+            }
+            $persons[] = $person;
+            $degree_opts[] = array('Person' => $person);
+        }
+        $degrees = $persons[0]->getDegreesBetweenPersons($degree_opts);
+
+        if (!isset($degrees) || (count($degrees) < 1)) {
+            $content = "Cannot find any connections at all, beginning with \"{$persons[0]->full_name}\".";
+            return $content;
+        }
+
+        if (end($degrees)->full_name !== end($persons)->full_name) {
+            if (count($degrees) > 1) {
+                $content = "No full connection found between “{$persons[0]->full_name}” and “". end($persons)->full_name ."”.<br />\n";
+                $content .= "But here are some partial connections:<br />\n";
+                // Continue
+            } else {
+                $content = "Cannot find any connections between “{$persons[0]->full_name}” and “". end($persons)->full_name ."”.<br />\n";
+                return $content;
+            }
+        } else {
+            $content = "Found a ". count($degrees) ."-degree connection between “{$persons[0]->full_name}” and “". end($persons)->full_name ."”:<br />\n";
+        }
+
+        // Pretty-print full connection-list (degrees of vegan).
+        // @TODO - Need to print all this out properly
+        $content .= "<pre>\n";
+        $content .= print_r($degrees, TRUE);
+        $content .= "\n</pre>\n";
+
+        return $content;
+    }
+
+
+    /**
+     * Implementation of view for fdvegan_page_not_found().
+     */
+    function fdvegan_page_not_found() {
+        drupal_set_title(t('Page Not Found'));
+
+        return fdvegan_Content::getPageNotFoundContent();
+    }
+
+
+    /**
+     * Implementation of view for fdvegan_page_forbidden().
+     */
+    function fdvegan_page_forbidden() {
+        drupal_set_title(t('Page Forbidden'));
+
+        return fdvegan_Content::getPageForbiddenContent();
+    }
+

@@ -1,0 +1,23 @@
+/**
+ * style_screen.css
+ *
+ * Page Styling for on-screen elements only
+ * (as opposed to Printer styling).
+ *
+ * @category   CSS
+ * @package    fdvegan
+ * @link       https://fivedegreevegan.aprojects.org
+ * @since      version 1.0
+ */
+
+
+@media screen {
+
+    .fdv-only-on-print {
+        display: none;
+    }
+    .fdv-no-print {
+        display: block;
+    }
+
+}  /* close @media */

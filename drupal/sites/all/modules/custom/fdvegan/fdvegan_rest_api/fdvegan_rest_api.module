@@ -1,0 +1,119 @@
+<?php
+/**
+ * fdvegan_rest_api.module
+ *
+ * Sub-module implementation for exporting the REST API for FDVegan.
+ *
+ * PHP version 5.6
+ *
+ * @category   Admin
+ * @package    fdvegan
+ * @author     Rob Howe <rob@robhowe.com>
+ * @copyright  2017 Rob Howe
+ * @license    This file is proprietary and subject to the terms defined in file LICENSE.txt
+ * @version    Bitbucket via git: $Id$
+ * @link       https://fivedegreevegan.aprojects.org
+ * @since      version 1.1
+ * @see        fdvegan.module
+ */
+
+
+    /**
+     * Implementation of hook_menu().
+     */
+    function fdvegan_rest_api_menu() {
+        $items = array();
+
+        //
+        // Hidden (non-menu) pages:
+        //
+
+        $items['rest-api'] = array(
+            'title'            => 'FDVegan REST API',
+            'description'      => 'Five Degrees of Vegan - REST API',
+            'type'             => MENU_CALLBACK,
+            'access callback'  => '_fdvegan_rest_api_access_callback',
+            'access arguments' => array('use fdvegan'),
+            'page callback'    => '_fdvegan_rest_api_export',
+            //'page arguments'   => array('fdvegan_rest_api_form'),
+            //'weight'           => 10,
+        );
+
+        return $items;
+    }
+
+
+    /**
+     * Access callback support function.
+     */
+    function _fdvegan_rest_api_access_callback($perm_array) {
+        return (user_access($perm_array) || fdvegan_Util::isEnvLTE('DEV'));  // Can always see this functionality in Dev env.
+    }
+
+
+    /**
+     * Display output for the "FDVegan REST API"
+     *
+     * Output JSON data from our database.
+     * Example usage:
+     *   https://fivedegreevegan.aprojects.org/rest-api/actor-tree/?person_id={person_id}
+     *     which is currently equivalent to:
+     *     https://fivedegreevegan.aprojects.org/rest-api/v1.0/actor-tree/?person_id={person_id}&depth=5&format=json&style=pv
+     *   https://fivedegreevegan.aprojects.org/rest-api/v1.0/actor-network/?depth=5&format=json&style=d3
+     */
+    function _fdvegan_rest_api_export() {
+        //fdvegan_Content::syslog('LOG_DEBUG', 'BEGIN rest-api');
+        $url_obj = fdvegan_rest_api_Util::getRestUrlObj();
+        //fdvegan_Content::syslog('LOG_DEBUG', " rest-api resource={$url_obj->resource}, id={$url_obj->id}");
+        $url_params = drupal_get_query_parameters();
+        $options = array();
+        switch ($url_obj->resource) {
+
+            case 'actor-network':
+                if (is_array($url_params) &&
+                    array_key_exists('degrees', $url_params)
+                   ) {
+                    $degrees = (int)$url_params['degrees'];
+                    // Limit max depth so we don't slow down the system!
+                    if (($degrees < 0) || ($degrees > fdvegan_Util::getMaxAllowedDegrees())) {
+                        $degrees = 0;
+                    }
+                    $options['Degrees'] = $degrees;
+                    fdvegan_Content::syslog('LOG_DEBUG', " rest-api: degrees={$options['Degrees']}.");
+                    $content = fdvegan_rest_api_Content::getActorNetworkContent($options);
+                } else {
+                    // Missing param(s)
+                    $content = fdvegan_rest_api_Content::getRestApiActorNotFoundContent($options);
+                }
+                break;
+
+            case 'actor-tree':
+                if (is_array($url_params) &&
+                    array_key_exists('depth', $url_params) &&
+                    array_key_exists('person_id', $url_params)
+                   ) {
+                    $options['PersonId'] = (int)$url_params['person_id'];
+                    $depth = (int)$url_params['depth'];
+                    // Limit max depth so we don't slow down the system!
+                    if (($depth < 1) || ($depth > fdvegan_Util::getMaxAllowedNodeDepth())) {
+                        $depth = 1;
+                    }
+                    $options['Depth'] = $depth;
+                    fdvegan_Content::syslog('LOG_DEBUG', " rest-api: person_id={$options['PersonId']}, depth={$options['Depth']}.");
+                    $content = fdvegan_rest_api_Content::getActorTreeContent($options);
+                } else {
+                    // Missing param(s)
+                    $content = fdvegan_rest_api_Content::getRestApiActorNotFoundContent($options);
+                }
+                break;
+
+            default:
+                // URL format not valid
+                $content = fdvegan_rest_api_Content::getRestApiActorNotFoundContent($options);
+        }
+
+        $content = drupal_json_encode($content);
+        // Don't "return $content;" here, just print it raw, headless, without any drupal_render()'ing.
+        print $content;
+    }
+

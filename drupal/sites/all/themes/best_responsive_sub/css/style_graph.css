@@ -1,0 +1,219 @@
+/**
+ * style_graph.css
+ *
+ * Custom stylesheet for best_responsive_sub theme graphs (protovis.js & D3.js).
+ *
+ * @category   CSS
+ * @package    fdvegan
+ * @link       https://fivedegreevegan.aprojects.org
+ * @since      version 1.1
+ */
+
+
+/*
+ * Actor Tree dialog/pop-up (using protovis.js)
+ */
+
+#fdv-actor-tree-iframe.loading {
+    height: 100%;
+    width: 100%;
+    min-height: 100px;
+    min-width: 100px;
+    background-color: #fff;
+    background-image: url(/sites/default/files/pictures/fdv-spinner.gif);
+    background-repeat: no-repeat;
+    background-position: center;
+    -khtml-border-radius: 2px;
+    -webkit-border-radius: 2px;
+    -moz-border-radius: 2px;
+    border-radius: 2px;
+}
+
+body.page-actor-tree,
+body.page-actor-tree-only,
+#fig {
+    background: none;
+}
+#fdvegan-actor-tree-modal,
+#fdvegan-actor-tree-modal iframe {
+    height: 100%;
+    width: 100%;
+    overflow: hidden;  /* to hide any unnecessary scrollbars */
+    padding: 0;
+    background-color: #FFF;
+    background-image: url(/sites/default/files/pictures/fdv-spinner.gif);
+    background-repeat: no-repeat;
+    background-position: center;
+}
+.ui-dialog .ui-dialog-buttonpane { 
+    text-align: center;  /* Center the "Close" button. */
+}
+.ui-dialog .ui-dialog-buttonpane .ui-dialog-buttonset { 
+    float: none;
+}
+
+/*
+ * Style the Actor Tree dialog/pop-up iframe
+ */
+body.page-actor-tree,
+body.page-actor-tree-only,
+.fdv-actor-tree-wrapper,
+.fdv-actor-tree-wrapper iframe {
+    overflow-x: hidden;
+}
+
+.fdv-actor-tree-header {
+    margin-bottom: 12px;
+}
+
+.fdv-popout-icon {
+    display: inline-block;
+    vertical-align: middle;
+    height: 28px;
+    width: 28px;
+/*    background-size: 28px;
+    background-repeat: no-repeat;
+    background-image: url(images/popout-icon.png);
+*/
+}
+
+
+
+/*
+ * Actor Network page (using D3.js)
+ */
+
+body.page-actor-network {
+/*    background: none;*/
+}
+body.page-actor-network #fig.loading {
+    height: 100%;
+    width: 100%;
+    min-height: 100px;
+    min-width: 100px;
+    background-image: url(/sites/default/files/pictures/fdv-spinner.gif);
+    background-repeat: no-repeat;
+    background-position: center;
+}
+
+.fdv-actor-network-header {
+    min-height: 80px;
+    background: #fdfde4;  /* V2 color scheme */
+    border-radius: 18px;
+    -webkit-border-radius: 18px;
+    -moz-border-radius: 18px;
+    margin: 2px;
+    margin-bottom: 8px;
+    word-wrap: normal;
+    font-weight: bold;
+    font-size: 15px;
+}
+.fdv-actor-network-header div {
+    text-align: left;
+}
+.fdv-actor-network-header div > * {
+    min-height: 24px;
+    margin: 24px 0px 0px 12px;
+}
+.fdv-actor-network-title {
+    font-size: 24px;
+    margin: 17px 0px 2px 12px !important;
+}
+#fdvegan-actor-network-top-text {
+    min-width: 400px;
+}
+
+/*
+ * The degree selector widget / controls:
+ */
+#fdv-deg-selector {
+    height: 18px;
+    width: 30px;
+    border: 2px solid #F2F1CA;
+    border-radius: 4px;
+    -webkit-border-radius: 4px;
+    -moz-border-radius: 4px;
+}
+#fdv-deg-selector:hover {
+    border: 2px solid #EAE9C2;
+    box-shadow: 1px 1px 1px 1px rgba(209, 209, 174, 0.1);
+}
+
+body.page-actor-network #fig,
+body.page-actor-network #fig svg {
+    background-color: #FFF;
+    margin-left: auto;
+    margin-right: auto;
+    padding-bottom: 16px;
+}
+
+path.arc {
+  cursor: move;
+  fill: #FFF;
+}
+
+.node {
+    font: 300 11px "Helvetica Neue", Helvetica, Arial, sans-serif;
+    fill: #003300;  /* 5DV dark green */
+}
+
+.link {  /* connection lines */
+    stroke: #009900;  /* 5DV green */
+    stroke-opacity: .25;
+    fill: none;
+/*    pointer-events: none;*/
+}
+
+.fdv-actor-tree-actor-name,
+.fdv-actor-network-actor-name,  /* top text */
+.node:hover,
+.node--source,
+.node--target {
+    font-weight: 700;
+}
+
+.fdv-actor-tree-actor-name,
+.fdv-actor-network-actor-name,  /* top text */
+.node:hover,  /* on-hover source link */
+.node--source {  /* has no effect? */
+    color: #0033EE;  /* blue */
+    fill: #0033EE;  /* blue */
+}
+.node--target {  /* on-hover target link */
+    fill: #CE0101;  /* 5DV lesser red */
+}
+
+.link--source,
+.link--target {
+    stroke-opacity: 1;
+    stroke-width: 3px;
+}
+.link--source {  /* on-hover backward connection lines */
+    stroke: #CE0101;  /* 5DV lesser red */
+}
+.link--target {  /* on-hover forward connection lines */
+    stroke: #E73420;  /* 5DV bright red */
+}
+
+
+/*
+ * Style the Actor Network help & warning dialogs/pop-ups
+ */
+#fdvegan-actor-network-help-modal,
+#fdvegan-actor-network-warning-modal {
+    display: none;
+}
+.ui-dialog .ui-dialog-titlebar {
+    background: #fdfde4;  /* V2 color scheme */
+}
+#fdvegan-actor-network-help-modal a:link,
+#fdvegan-actor-network-help-modal a:visited,
+#fdvegan-actor-network-warning-modal a:link,
+#fdvegan-actor-network-warning-modal a:visited {
+    color: #E73420;
+}
+#fdvegan-actor-network-help-modal a:hover,
+#fdvegan-actor-network-warning-modal a:hover {
+    text-decoration: underline;
+}
+

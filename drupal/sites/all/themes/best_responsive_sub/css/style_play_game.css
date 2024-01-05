@@ -1,0 +1,145 @@
+/**
+ * style_play_game.css
+ *
+ * Custom stylesheet for best_responsive_sub theme "Play Game" page.
+ *
+ * @category   CSS
+ * @package    fdvegan
+ * @link       https://fivedegreevegan.aprojects.org
+ * @since      version 2.1
+ */
+
+
+#fdv-play-game-content {
+    display: none;  /* initially hidden, then shown via jQuery */
+    background-color: #fff;
+    border-radius: 18px;
+    -khtml-border-radius: 18px;
+    -webkit-border-radius: 18px;
+    -moz-border-radius: 18px;
+    margin: 2px;
+    margin-bottom: 8px;
+    padding: 6px 12px;
+    word-wrap: normal;
+    font-weight: normal;
+    font-size: 15px;
+
+}
+#fdv-play-game-content.loading {
+    min-height: 160px;
+    min-width: 100px;
+    background-image: url(/sites/default/files/pictures/fdv-spinner.gif);
+    background-repeat: no-repeat;
+    background-position: center;
+}
+
+#fdv-play-game-rules-modal {
+    height: 100%;
+    width: 100%;
+    padding: 0;
+}
+
+.ui-dialog .ui-dialog-buttonpane { 
+    text-align: center;  /* Center the "Close" button. */
+}
+.ui-dialog .ui-dialog-buttonpane .ui-dialog-buttonset { 
+    float: none;
+}
+
+#fdv-play-game-header {
+    min-height: 30px;
+    background: #fdfde4;  /* V2 color scheme */
+    border-radius: 18px;
+    -khtml-border-radius: 18px;
+    -webkit-border-radius: 18px;
+    -moz-border-radius: 18px;
+    margin: 2px;
+    margin-bottom: 8px;
+    padding: 6px 12px;
+    word-wrap: normal;
+    font-weight: normal;
+    font-size: 15px;
+}
+
+#fdvegan-actor-network-top-text {
+    min-width: 400px;
+}
+
+#fdvegan-play-game-rules-modal-btn {
+    float: right;
+}
+
+#fdv-play-game-setup-content {
+    min-height: 80px;
+    background: #fde3e3;  /* V2 color scheme */
+    border-radius: 18px;
+    -khtml-border-radius: 18px;
+    -webkit-border-radius: 18px;
+    -moz-border-radius: 18px;
+    padding: 8px 12px 14px 12px;
+    word-wrap: normal;
+    font-size: 15px;
+    border: 1px solid #f4ebeb;
+}
+
+/*
+ * The degree selector widget / controls:
+ */
+#fdv-deg-selector {
+/*    height: 18px;
+    width: 30px;
+    border: 2px solid #F2F1CA;
+    border-radius: 4px;
+    -webkit-border-radius: 4px;
+    -moz-border-radius: 4px;
+*/
+}
+#fdv-deg-selector:hover {
+/*
+    border: 2px solid #EAE9C2;
+    box-shadow: 1px 1px 1px 1px rgba(209, 209, 174, 0.1);
+*/
+}
+
+.fdv-deg-selector-description {
+    margin-left: 10px;
+    font-weight: normal;
+    font-size: .8em;
+}
+
+#fdv-play-game-start-btn {
+    margin-top: 16px;
+}
+
+/*
+ * Style the Actor Network help & warning dialogs/pop-ups
+ */
+#fdv-play-game-rules-modal,
+#fdv-play-game-warning-modal {
+    display: none;
+}
+.ui-dialog .ui-dialog-titlebar {
+    background: #fdfde4;  /* V2 color scheme */
+}
+#fdv-play-game-rules-modal a:link,
+#fdv-play-game-rules-modal a:visited,
+#fdv-play-game-warning-modal a:link,
+#fdv-play-game-warning-modal a:visited {
+    color: #E73420;
+}
+#fdv-play-game-rules-modal a:hover,
+#fdv-play-game-warning-modal a:hover {
+    text-decoration: underline;
+}
+
+
+/*
+ * Actual game controls:
+ */
+#fdv-play-game-content {
+    background-color: #FFF;
+    background-image: url(/sites/default/files/pictures/fdv-spinner.gif);
+    background-repeat: no-repeat;
+    background-position: center;
+}
+

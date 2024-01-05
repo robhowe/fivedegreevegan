@@ -1,0 +1,157 @@
+/**
+ * style_general.css
+ *
+ * Stylesheet for general CSS (not theme-specific).
+ *
+ * @category   CSS
+ * @package    fdvegan
+ * @link       https://fivedegreevegan.aprojects.org
+ * @since      version 0.1
+ */
+
+
+/*
+ * Content
+ */
+strong, .strong, .bold {
+    font-weight: bold;
+}
+em, .em, .italic {
+    font-style: italic;
+}
+.underline {
+    text-decoration: underline;
+}
+
+.red {
+    color: red;
+}
+.green {
+    color: green;
+}
+.blue {
+    color: blue;
+}
+.yellow {
+/*    color: yellow;*/  /* pure yellow text is not readable on a white bg */
+    color: #918F0C;  /* readable text color */
+}
+
+.nostyle {
+    background-color: #99FFFF;
+    color: #000000;
+    text-decoration: none;
+    font-family: sans-serif;
+    font-size: 12pt;
+    padding: 0px;
+    margin-top: 0px;
+    margin-bottom: 0px;
+    margin-right: 0px;
+    margin-left: 0px;
+}
+
+.left {
+    text-align: left;
+    float: left;
+}
+.center {
+    text-align: center;
+    margin-left: auto;
+    margin-right: auto;
+}
+.right {
+    text-align: right;
+    float: right;
+}
+.clear {
+    clear: both;
+}
+.top {
+    vertical-align: text-top;
+}
+
+.sub {
+    vertical-align: sub;
+    font-size: 80%;
+}
+.sup {
+    vertical-align: super;
+    font-size: 80%;
+}
+
+.display-none {
+    display: none;
+}
+.visibility-hidden {
+    visibility: hidden;
+}
+
+small, .small {
+/*    font-size: 10pt;*/
+/*    font-size: 80%;*/
+    font-size: .8em;
+}
+.large {
+    font-size: 1.2em;
+}
+.blackFontSize1 {
+    color: #000000;
+    font-family: "Times New Roman", Times, serif;
+    font-size: 7pt;
+}
+.blackFontSize2 {
+    color: #000000;
+    font-family: sans-serif;
+    font-size: 10pt;
+}
+
+.nostyle {
+    background-color: #99FFFF;
+    color: #000000;
+    text-decoration: none;
+    font-family: sans-serif;
+    font-size: 12pt;
+    padding: 0px;
+    margin-top: 0px;
+    margin-bottom: 0px;
+    margin-right: 0px;
+    margin-left: 0px;
+}
+
+.tinylink {
+    font-size: 7pt;
+    font-weight: normal;
+    letter-spacing: 0.1em;
+    /* cursor: help; */
+}
+
+.col1of3 {
+    float: left;
+    clear: left;
+    text-align: center;
+    margin-left: auto;
+    margin-right: auto;
+}
+.col2of3 {
+    float: left;
+    padding: 2px 32px;
+    text-align: center;
+    margin-left: auto;
+    margin-right: auto;
+}
+.col3of3 {
+    float: left;
+    clear: right;
+    text-align: center;
+    margin-left: auto;
+    margin-right: auto;
+}
+
+.colp1of3, .colp2of3 {
+    width: 33%;
+    display: inline-block;
+}
+.colp3of3 {
+    width: auto;
+    display: inline-block;
+}

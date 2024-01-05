@@ -1,0 +1,389 @@
+/* All Responsive
+================================================== */  
+
+
+/*
+ * Some wider pages (like the Actor Network page) need to bump
+ * the display of the right sidebar to the bottom instead.
+ * See: template.php
+ */
+  body.fdv-bump-sidebar #wrap {
+    width: 959px;
+  }
+  body.fdv-bump-sidebar #content {
+    width: 100%;
+  }
+  body.fdv-bump-sidebar .node-teaser img {
+    float: none;
+  }
+  body.fdv-bump-sidebar #sidebar {
+    width: 100%;
+  }
+  body.fdv-bump-sidebar .preface-block, .footer-block {
+    width: 100%;
+  }
+  body.fdv-bump-sidebar .comment .attribution, .comment .comment-text { 
+    display: inline-block;
+  }
+  body.fdv-bump-sidebar .sidebar-bg {
+    background-image: none;
+    margin-bottom: 0;
+  }
+  body.fdv-bump-sidebar #sidebar {
+    width: 100%;
+    background: #f9f9f9;
+    background: #F9F7E4;
+    margin: 30px -30px -30px;
+    padding: 30px;
+    border-top: 1px solid #ddd;
+  }
+
+
+
+@media only screen and (max-width: 959px) {
+
+  /*hide things*/
+  #navigation ul {
+    display: none;
+  }
+
+  #toplink {
+    display: none !important;
+  }
+
+  /* logo */
+  #logo {
+    text-align: center;
+  }
+
+  #logo img {
+    display: inline-block;
+  }
+
+  #logo h1 a, #logo h2 a {
+    display: block;
+    float: none;
+  }
+
+  /* navigation top menu */
+  #navigation {
+    height: 70px;
+    width: 100%;
+    position: inherit;
+    top: auto;
+    left: auto;
+    right: auto;
+    margin-top: 0px;
+    background: #e73420 url('../images/responsive-nav.png') right center no-repeat;
+  }
+
+  #navigation .selector {
+    width: 100%;
+    color: #fff;
+    font-weight: bold;
+    line-height: 70px;
+    text-indent: 40px;
+    height: 50px;
+    width: 100%;
+    font-size: 14px;
+    display: -moz-inline-box;
+    display: inline-block;  /* display dropdown nav */
+    vertical-align: middle;
+    cursor: pointer !important;
+    margin: 0px;
+    padding: 0px;
+    border: none;
+    /*zoom: 1;*/  /* no longer standard */
+    transform: scale(1); /* Standard Property */
+    transform-origin: 0 0;  /* Standard Property */
+  }
+
+  #navigation .selector:hover {
+    opacity: 1;
+    -moz-opacity: 1;
+    -webkit-opacity: 1;
+    text-shadow: 1px 1px 1px #111;
+  }
+
+  #navigation .selector select:focus {
+    outline: 0;
+  }
+
+  #navigation .selector span {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    margin-top: -43px;
+  }
+
+  #navigation .selector select {
+    position: absolute;
+    top: 0px;
+    left: 0px;
+    margin-top: -40px;
+    height: 70px;
+    color: #fff;
+    background: none;
+    width: 100%;
+    font-family: "Helvetica Neue",Helvetica,Arial,sans-serif;
+    font-weight: 500;
+    cursor: pointer;
+  }
+
+  #navigation .selector option {
+    background: #205F24;
+    padding: 2px;
+    border: none;
+    font-size: 1.25em;
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    /*appearance: none;*/
+  }
+
+  #navigation .selector option:first-child {
+    display: none;
+  }
+  #navigation .selector option:nth-last-child(-n+2) {
+    color: #ccc;
+    font-weight: 400;
+  }
+
+  /*
+   * On the <front> page, there isn't enough width to show the
+   * slideshow, so simply hide it.
+   * See also: fdvegan_blocks.php::_fdvegan_slider_block_content()
+   */
+  #home-slider {
+      display: none;
+  }
+
+
+    /*
+     * See: style_graph.css
+     */
+    .fdv-actor-network-header {
+        min-height: 140px;
+/*        text-overflow: clip;
+        overflow: hidden;
+*/
+    }
+    .fdv-actor-network-header div.col2of3 {
+        clear: both;
+        padding: 0px;
+        margin-left: 0px;
+        margin-top: 6px;
+        margin-bottom: 12px;
+    }
+    .fdv-actor-network-header div.col3of3 {
+        clear: both;
+        padding-left: 0px;
+        margin-left: 6px;
+        margin-top: 0px;
+        margin-bottom: 12px;
+    }
+    .fdv-actor-network-header div > * {
+        min-height: 30px;
+        margin: 0px 0px 0px 6px;
+    }
+    .fdv-actor-network-title {
+        margin: 8px 0px 2px 12px !important;
+    }
+
+}
+
+
+/* Tablet (Portrait) = Design for a width of 730px
+================================================== */
+
+@media only screen and (min-width: 768px) and (max-width: 959px) {
+
+  /*main*/
+  body.fdv-bump-sidebar #wrap,
+  #wrap {
+    width: 690px;
+  }
+  #content {
+    width: 380px;
+  }
+
+  #sidebar {
+    width: 190px;
+  }
+  .sidebar-bg{
+    background-image: url("../images/sidebar-bg-tablet.png");
+  }
+
+  .meta li{
+    display: block;
+  }
+
+  .fdv-user-login-facebook::before {
+    left: 0.75em;
+  }
+
+
+  /*footer*/
+  .preface-block, .footer-block {
+    float: left;
+    width: 190px;
+    margin-right: 20px;
+  }
+
+}
+
+
+
+/* Mobile (Portrait) = Design for a width of 280px
+================================================== */
+
+@media only screen and (max-width: 767px) {
+
+    .mobile-only {  /* See: .mobile-hide */
+        display: initial;
+    }
+    .mobile-hide {  /* See: .mobile-only */
+        display: none;
+    }
+
+    /* CAPTCHA is too wide on small screens,
+     * so crop the superfluous logo part.
+     */
+    fieldset.captcha {
+        width: 180px;
+    }
+    fieldset.captcha div.g-recaptcha {
+        width: 160px;
+        overflow: hidden;
+        /* If Google changes its recaptcha content someday,
+         * this may need adjusting:
+         */
+        -khtml-border-radius: 4px;
+        -webkit-border-radius: 4px;
+        -moz-border-radius: 4px;
+        border-radius: 4px;
+    }
+
+  /*main*/
+  #header-social {
+    display: none;
+  }
+  body.fdv-bump-sidebar #wrap,
+  #wrap {
+    width: 280px;
+  }
+  #content {
+    width: 100%;
+  }
+  .node-teaser img {
+    float: none;
+  }
+  ul.inline li {
+    display: block;
+    padding: 5px;
+  }
+
+  /*navigation top menu*/
+  #navigation {
+    margin-top: -15px;
+  }
+
+  #sidebar {
+    width: 100%;
+  }
+  .preface-block, .footer-block {
+    width: 100%;
+  }
+
+  .comment .attribution, .comment .comment-text { 
+    display: inline-block;
+  }
+
+  .sidebar-bg {
+    background-image: none;
+    margin-bottom: 0;
+  }
+
+  #sidebar {
+    width: 100%;
+    background: #f9f9f9;
+    background: #F9F7E4;
+    margin: 30px -30px -30px;
+    padding: 30px;
+    border-top: 1px solid #ddd;
+  }
+
+  .meta li {
+    display: block;
+  }
+
+  #fdv-footer span {
+    display: block;  /* only set for smallest two responsive.css screen sizes */
+  }
+
+  .fdv-user-login-facebook::before {
+    left: 0.7em;
+  }
+
+
+  /*
+   * On the Actor page, there isn't enough width to show the
+   * "Character" column, so simply hide it.
+   */
+  body.page-actor th.header:last-child,
+  body.page-actor td:last-child {
+      display: none;
+  }
+
+  /*
+   * On the Movie page, there isn't enough width to show the
+   * "Vegan?" column, so simply hide it.
+   */
+  body.page-movie th.header:last-child,
+  body.page-movie td:last-child {
+      display: none;
+  }
+
+}
+
+
+/* Mobile (Landscape)
+================================================== */
+
+    /* Note: Design for a width of 480px */
+
+@media only screen and (min-width: 480px) and (max-width: 767px) {
+
+  body.fdv-bump-sidebar #wrap,
+  #wrap {
+    width: 370px;
+  }
+
+    /* CAPTCHA is too wide on small screens,
+     * so un-crop the superfluous logo part from rules above.
+     */
+    fieldset.captcha {
+        width: initial;
+    }
+    fieldset.captcha div.g-recaptcha {
+        width: initial;
+        -khtml-border-radius: 0px;
+        -webkit-border-radius: 0px;
+        -moz-border-radius: 0px;
+        border-radius: 0px;
+    }
+
+  /*navigation top menu*/
+  #navigation {
+    margin-top: 0px;
+  }
+
+  .fdv-user-login-facebook::before {
+    left: 0.7em;
+  }
+
+  #fdv-footer span {
+    display: block;  /* only set for smallest two responsive.css screen sizes */
+  }
+
+}

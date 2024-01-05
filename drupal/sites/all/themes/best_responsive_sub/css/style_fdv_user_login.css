@@ -1,0 +1,119 @@
+/**
+ * style_fdv_user_login.css
+ *
+ * Custom stylesheet for best_responsive_sub theme
+ * user-login, register, and change-pass pages.
+ *
+ * @category   CSS
+ * @package    fdvegan
+ * @link       https://fivedegreevegan.aprojects.org
+ * @since      version 1.1
+ */
+
+
+/*
+ * FDV User pages
+ *   E.g.:  /user, /user/login, /user/register, user/password
+ */
+
+body.page-user div.profile .fdv-user-view-member-since {
+    margin-left: 8px;
+}
+.fdv-user-view-benefits-text {
+    clear: both;
+    margin-top: 30px;
+    margin-bottom: 6px;
+}
+.fdv-user-view-benefits-text ul {
+    margin-left: 32px;
+}
+
+#user-profile-form label,
+.fdv-user-login-form-wrapper label,
+.fdv-user-register-form-wrapper label,
+.fdv-user-pass-form-wrapper label {
+    float: left;
+    margin-right: 8px;
+    vertical-align: middle;
+}
+
+.fdv-user-form-wrapper,
+.fdv-user-login-form-wrapper,
+.fdv-user-login-facebook,
+.fdv-user-login-openid-links,
+.fdv-user-register-form-wrapper,
+.fdv-user-pass-form-wrapper {
+    margin: 22px 16px;
+}
+
+body.page-user .fdv-separator,
+body.page-user-login .fdv-separator,
+body.page-user-register .fdv-separator,
+body.page-user-pass .fdv-separator {
+    font-weight: bold;
+    margin-top: 22px;
+    margin-bottom: 22px;
+    margin-left: -8px;
+}
+body.page-user .fdv-separator hr,
+body.page-user-login .fdv-separator hr,
+body.page-user-register .fdv-separator hr,
+body.page-user-pass .fdv-separator hr {
+    display: inline-block;
+    width: 20%;
+    margin-top: 0.7em;
+    margin-bottom: 0.3em;
+    margin-left: 8px;
+    margin-right: 8px;
+}
+
+#edit-fdv-bottom-text,
+#fdv-bottom-text {
+    margin: 38px 0px;
+    padding: 15px;
+    border-style: solid;
+    border-width: 1px;
+    border-color: #B0C6B1;
+    border-radius: 5px;
+}
+
+
+/**
+ * Facebook Login "button" (for simple-fb-connect)
+ * See: style.css .fdv-btn
+ */
+.fdv-btn:not(button).fdv-user-login-facebook,  /* some anchor tags are also styled as buttons */
+.fdv-btn span.ui-button-text.fdv-user-login-facebook,  /* buttons in dialog popups */
+.ui-widget-content .fdv-btn.fdv-user-login-facebook span.ui-button-text,  /* buttons in dialog popups */
+.fdv-user-login-facebook {
+    background-color: #496BAC;
+    display: block;
+    -webkit-transition: all 0.15s ease-in;  /* Chrome 1-25, Safari 3.2+ */
+    -moz-transition: all 0.15s ease-in;  /* Firefox 4-15 */
+    -o-transition: all 0.15s ease-in;  /* Opera 10.50–12.00 */
+    transition: all 0.15s ease-in;  /* Chrome 26, Firefox 16+, IE 10+, Opera 12.10+ */
+}
+.fdv-user-login-facebook:hover,
+.fdv-user-login-facebook:focus {
+    background-color: #5B7DBF;
+    -webkit-transition: all 0.15s ease-out;  /* Chrome 1-25, Safari 3.2+ */
+    -moz-transition: all 0.15s ease-out;  /* Firefox 4-15 */
+    -o-transition: all 0.15s ease-out;  /* Opera 10.50–12.00 */
+    transition: all 0.15s ease-out;  /* Chrome 26, Firefox 16+, IE 10+, Opera 12.10+ */
+}
+.fdv-user-login-facebook:active {
+    background-color: #335391;
+}
+.fdv-user-login-facebook::before {
+    background: url(../images/facebook_connect_icon.png) no-repeat;
+    background-image: url(../images/facebook_connect_icon.png);
+    background-size: contain;
+    content: '';
+    display: inline-block;
+    height: 60%;
+    padding-left: 1.25em;
+    position: absolute;
+    top: 20%;
+    left: 1.25em;
+}
+

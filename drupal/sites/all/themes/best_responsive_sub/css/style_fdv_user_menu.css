@@ -1,0 +1,176 @@
+/**
+ * style_fdv_user_menu.css
+ *
+ * Custom stylesheet for best_responsive_sub theme user menu / nav.
+ *
+ * @category   CSS
+ * @package    fdvegan
+ * @link       https://fivedegreevegan.aprojects.org
+ * @since      version 0.9
+ */
+
+
+/* FDV User Navigation
+================================================== */
+
+#navigation #fdv-user-menu {
+  float: right;
+  margin-top: -113px;
+  margin-right: -18px;
+}
+
+#fdv-user-menu > ul, #fdv-user-menu > ul * {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+#fdv-user-menu > ul {
+  line-height: 1.0;
+}
+
+#fdv-user-menu > ul ul {
+  position: absolute;
+  top: -999em;
+  width: 180px;
+}
+
+#fdv-user-menu > ul ul li {
+  width: 100%;
+}
+
+#fdv-user-menu > ul li:hover {
+  visibility: inherit;
+}
+
+#fdv-user-menu > ul li {
+/*  float: left;*/
+  position: relative;
+}
+
+#fdv-user-menu > ul a {
+  display: block;
+  position: relative;
+}
+
+#fdv-user-menu > ul li:hover ul, #fdv-user-menu > ul li.sfHover ul {
+  left: 0px;
+  top: 30px;
+  z-index: 99;
+}
+
+#fdv-user-menu > ul li:hover li ul, #fdv-user-menu > ul li.sfHover li ul {
+  top: -999em;
+}
+
+#fdv-user-menu > ul li li:hover ul, #fdv-user-menu > ul li li.sfHover ul {
+  left: 180px;
+  top: 1px;
+}
+
+/*styling*/
+#navigation #fdv-user-menu > ul > li:hover > ul, #fdv-user-menu > ul li.sfHover > ul {
+  top: 32px;
+}
+
+#navigation #fdv-user-menu > ul li li:hover ul, #fdv-user-menu > ul li li.sfHover ul,
+#fdv-user-menu > ul li li:hover ul, #fdv-user-menu > ul li li.sfHover ul {
+  left: 200px;
+  top: -10px;
+}
+
+#navigation #fdv-user-menu > ul a {
+  font-size: 1em;
+  height: 32px;
+  line-height: 32px;
+  color: #CCC;
+  padding: 0 8px;
+  text-decoration: none;
+  font-weight: 600;
+}
+
+#navigation #fdv-user-menu > ul > li > a {
+  border-radius: 2px;
+  -moz-border-radius: 2px;
+  -webkit-border-radius: 2px;
+}
+
+#navigation #fdv-user-menu > ul li {
+  float: left;
+  position: relative;
+}
+
+#navigation #fdv-user-menu > ul > li > a:hover {
+    color: #fff;
+    text-shadow: 1px 1px 1px #111;
+}
+
+#navigation #fdv-user-menu > ul > li > a.active {
+  background: #e73420;
+  color: #fff;
+  font-weight: bold;
+}
+
+#navigation #fdv-user-menu > ul > li.sfHover > a,
+#navigation a.active,
+#navigation a.active:hover,
+#navigation #fdv-user-menu > ul > li > a.active-trail {
+  color: #fff;
+}
+
+/*drop-down styles*/
+#navigation #fdv-user-menu > ul ul {
+  position: absolute;
+  top: -999em;
+  width: 200px;
+  z-index: 9999;
+  left: 0;
+  padding-top: 10px;
+  border-radius: 2px;
+}
+
+#navigation #fdv-user-menu > ul ul > li:first-child{
+  -webkit-border-top-left-radius: 2px;
+  -webkit-border-top-right-radius: 2px;
+  -moz-border-radius-topleft: 2px;
+  -moz-border-radius-topright: 2px;
+  border-top-left-radius: 2px;
+  border-top-right-radius: 2px;
+}
+#navigation #fdv-user-menu > ul ul > li:last-child{
+  -webkit-border-bottom-right-radius: 2px;
+  -webkit-border-bottom-left-radius: 2px;
+  -moz-border-radius-bottomright: 2px;
+  -moz-border-radius-bottomleft: 2px;
+  border-bottom-right-radius: 2px;
+  border-bottom-left-radius: 2px;
+}
+#navigation #fdv-user-menu > ul ul li {
+  background: #e73420;
+  border-bottom: 1px solid rgba(0,0,0,0.1);
+}
+
+#navigation #fdv-user-menu > ul ul li:first-child {
+  border-top: 0;
+}
+
+#navigation #fdv-user-menu > ul ul li:last-child {
+  border-bottom: 0;
+}
+
+#navigation #fdv-user-menu > ul ul a {
+  display: block;
+  padding: 10px;
+  color: #fff;
+  height: auto;
+  margin: 0px;
+  border: 0px;
+  font-size: 0.929em;
+  font-weight: normal;
+  text-shadow: none;
+}
+
+#navigation #fdv-user-menu > ul ul li > a:hover {
+  background-color: #bf2615;
+}
+

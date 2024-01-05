@@ -1,0 +1,12 @@
+name = FDVegan REST API
+description = Sub-module which exports the REST API for the Five Degrees of Vegan module.
+package = Vegan modules
+core = 7.x
+
+;configure = admin/config/fdvegan/settings
+dependencies[] = fdvegan
+
+files[] = fdvegan_rest_api.module
+files[] = fdvegan_rest_api_content.php
+files[] = fdvegan_rest_api_data.php
+files[] = fdvegan_rest_api_util.php

@@ -1,0 +1,33 @@
+/**
+ * style_plain.css
+ *
+ * Stylesheet for plain .html webpages outside of normal Drupal theming.
+ *
+ * @category   CSS
+ * @package    fdvegan
+ * @link       https://fivedegreevegan.aprojects.org
+ * @since      version 0.9
+ */
+
+
+@import url(https://fonts.googleapis.com/css?family=Open+Sans:400italic,600italic,700italic,400,300,600,700);
+
+@font-face {  /* Used by: .fdv-brand-text */
+    font-family: 'Coolsville';
+    src: url('/sites/all/themes/best_responsive_sub/css/Coolsville.ttf'),
+    url('/sites/all/themes/best_responsive_sub/css/Coolsville.ttf');  /* IE */
+}
+
+.fdv-brand-text {
+    font-family: Coolsville, 'Open Sans', Helvetica, Arial, Helvetica, sans-serif;
+/*    font-size: 1.1em;*/
+}
+
+.page-node #content-wrap img.fdv-smiley,
+img.fdv-smiley {
+    margin-bottom: 0px;
+    padding-left: 4px;
+    padding-right: 4px;
+    padding-bottom: 0px;
+    vertical-align: text-bottom;
+}
